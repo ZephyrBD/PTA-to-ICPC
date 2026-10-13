@@ -7,7 +7,7 @@ TZ = dt.timezone(dt.timedelta(hours=8))
 NOW = dt.datetime(2023, 5, 21, 10, 0, 0, tzinfo=TZ)
 
 
-def make_data() -> ContestData:
+def make_data(rows=None) -> ContestData:
     data = ContestData()
     data.contest = {
         "id": "1", "start_time": "2023-05-21T09:00:00+08:00",
@@ -25,13 +25,14 @@ def make_data() -> ContestData:
     }
     data.problems = {"A": {"id": "A"}, "B": {"id": "B"}}
     data.judgement_types = {k: dict(v, id=k) for k, v in BUILTIN_JUDGEMENT_TYPES.items()}
-    rows = [
-        ("1", "D22", "A", "0:05:00", "AC"),
-        ("2", "D22", "B", "0:10:00", "WA"),
-        ("3", "D22", "B", "0:30:00", "AC"),
-        ("4", "D23", "A", "0:07:00", "AC"),
-        ("5", "E01", "A", "0:01:00", None),
-    ]
+    if rows is None:
+        rows = [
+            ("1", "D22", "A", "0:05:00", "AC"),
+            ("2", "D22", "B", "0:10:00", "WA"),
+            ("3", "D22", "B", "0:30:00", "AC"),
+            ("4", "D23", "A", "0:07:00", "AC"),
+            ("5", "E01", "A", "0:01:00", None),
+        ]
     for sid, team, prob, ct, jtype in rows:
         data.submissions[sid] = {
             "id": sid, "team_id": team, "problem_id": prob,
@@ -60,6 +61,34 @@ def test_pending_counted():
     pa = next(p for p in e01["problems"] if p["problem_id"] == "A")
     assert pa["num_pending"] == 1
     assert pa["solved"] is False
+
+
+def test_ce_does_not_penalize():
+    data = make_data([
+        ("1", "D22", "A", "0:10:00", "CE"),
+        ("2", "D22", "A", "0:30:00", "AC"),
+    ])
+    sb = compute_scoreboard(data, NOW)
+    d22 = next(r for r in sb["rows"] if r["team_id"] == "D22")
+    pa = next(p for p in d22["problems"] if p["problem_id"] == "A")
+    assert pa["num_judged"] == 2
+    assert pa["solved"] is True
+    assert d22["score"]["num_solved"] == 1
+    # CE has penalty: False, so total is just the AC time (not +20min).
+    assert d22["score"]["total_time"] == "0:30:00"
+
+
+def test_tie_teams_share_rank_and_next_skips():
+    data = make_data([
+        ("1", "D22", "A", "0:05:00", "AC"),
+        ("2", "D23", "A", "0:05:00", "AC"),
+        ("3", "E01", "A", "0:07:00", "AC"),
+    ])
+    sb = compute_scoreboard(data, NOW)
+    ranked = [(r["rank"], r["team_id"]) for r in sb["rows"]]
+    assert dict((t, rk) for rk, t in ranked)["D22"] == 1
+    assert dict((t, rk) for rk, t in ranked)["D23"] == 1
+    assert dict((t, rk) for rk, t in ranked)["E01"] == 3
 
 
 def test_rank_order_and_ties():

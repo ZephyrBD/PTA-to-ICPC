@@ -36,6 +36,7 @@ def compute_scoreboard(data: ContestData, now: dt.datetime,
         }
         num_solved = 0
         total_penalty = dt.timedelta(0)
+        failed_eligible: dict[str, int] = {}
         subs = sorted(by_team[team["id"]], key=lambda s: _parse_time(s["contest_time"]))
         for sub in subs:
             pid = sub["problem_id"]
@@ -54,9 +55,13 @@ def compute_scoreboard(data: ContestData, now: dt.datetime,
                 cell["solved"] = True
                 cell["time"] = sub["contest_time"]
                 num_solved += 1
-                # ICPC: penalty_time per failed attempt before the first AC;
-                # the AC attempt itself adds no penalty (num_judged includes it).
-                total_penalty += _parse_time(sub["contest_time"]) + penalty * (cell["num_judged"] - 1)
+                # ICPC: penalty per penalty-eligible failed attempt before the
+                # first AC; non-penalty verdicts (CE/SE) are not counted.
+                total_penalty += (_parse_time(sub["contest_time"])
+                                  + penalty * failed_eligible.get(pid, 0))
+            elif not jt.get("solved"):
+                if jt.get("penalty"):
+                    failed_eligible[pid] = failed_eligible.get(pid, 0) + 1
         rows.append({
             "rank": 0,
             "team_id": team["id"],
