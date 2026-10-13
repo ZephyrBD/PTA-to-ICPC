@@ -73,6 +73,7 @@ def test_access_lists_expected_endpoints():
     assert types == {
         "contests", "state", "groups", "organizations", "teams", "problems",
         "languages", "judgement-types", "submissions", "judgements", "scoreboard",
+        "event-feed",
     }
     assert acc["capabilities"] == []
     for e in acc["endpoints"]:

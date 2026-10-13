@@ -27,6 +27,7 @@ BUILTIN_JUDGEMENT_TYPES = {
     "CE": {"name": "Compile Error", "penalty": False, "solved": False},
     "RE": {"name": "Run-Time Error", "penalty": True, "solved": False},
     "SE": {"name": "Submission Error", "penalty": False, "solved": False},
+    "PA": {"name": "Partial Accepted", "penalty": True, "solved": False},
 }
 
 SEAT_USER_RE = re.compile(r"^([A-Za-z]\d{1,2})\s+(\S.*)$")

@@ -101,6 +101,15 @@ def test_manual_judgement_type_override_applies():
     assert data.judgement_types["CE"]["penalty"] is False
 
 
+def test_judgement_types_include_pa():
+    data = t()
+    pa = data.judgement_types["PA"]
+    assert pa["id"] == "PA"
+    assert pa["name"] == "Partial Accepted"
+    assert pa["penalty"] is True
+    assert pa["solved"] is False
+
+
 def test_languages_collected_from_submissions():
     data = t()
     assert data.languages["cpp"]["name"] == "C++"

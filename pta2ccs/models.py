@@ -42,6 +42,7 @@ ACCESS_ENDPOINTS = [
         "id", "submission_id", "judgement_type_id", "current",
         "start_time", "start_contest_time", "end_time", "end_contest_time"]},
     {"type": "scoreboard", "properties": ["time", "contest_time", "state", "rows"]},
+    {"type": "event-feed", "properties": ["type", "id", "data", "token"]},
 ]
 
 

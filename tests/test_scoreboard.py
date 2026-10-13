@@ -78,6 +78,20 @@ def test_ce_does_not_penalize():
     assert d22["score"]["total_time"] == "0:30:00"
 
 
+def test_pa_penalizes_until_ac():
+    data = make_data([
+        ("1", "D22", "A", "0:10:00", "PA"),
+        ("2", "D22", "A", "0:20:00", "AC"),
+    ])
+    sb = compute_scoreboard(data, NOW)
+    d22 = next(r for r in sb["rows"] if r["team_id"] == "D22")
+    cell = next(p for p in d22["problems"] if p["problem_id"] == "A")
+    assert cell["num_judged"] == 2
+    assert cell["solved"] is True
+    # PA is penalty-eligible: AC at 0:20 + 1 * 0:20 penalty = 0:40
+    assert d22["score"]["total_time"] == "0:40:00"
+
+
 def test_tie_teams_share_rank_and_next_skips():
     data = make_data([
         ("1", "D22", "A", "0:05:00", "AC"),

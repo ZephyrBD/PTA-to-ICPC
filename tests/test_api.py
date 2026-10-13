@@ -59,6 +59,21 @@ def test_filtering_by_team_id():
     assert [s["id"] for s in r.json()] == ["1"]
 
 
+def test_empty_query_param_matches_null():
+    # Contest API: an empty-string query value matches attributes that are null
+    manual = {"contest": dict(MANUAL["contest"]),
+              "teams": {"D22": {"organization_id": "org1"}}}
+    store = Store()
+    store.apply_all(translate("c1", manual, SUBS, [{"id": "A", "title": "题A"}],
+                              None, NOW))
+    c = TestClient(create_app(store, poller=None, contest_id="c1"))
+    r = c.get("/contests/c1/teams?organization_id=")
+    assert r.status_code == 200
+    assert [t["id"] for t in r.json()] == ["D23"]  # derived team: organization_id None
+    r = c.get("/contests/c1/teams?organization_id=org1")
+    assert [t["id"] for t in r.json()] == ["D22"]
+
+
 def test_scoreboard_and_group_filter():
     c = make_client()
     r = c.get("/contests/c1/scoreboard")
@@ -110,3 +125,45 @@ def test_default_poller_client_gets_manual_timezone():
     poller, tz = _make_poller(settings, manual, Store())
     assert tz == "+09:00"
     assert poller.client._tz == "+09:00"
+
+
+class _LifespanFakeClient:
+    def __init__(self, closable: bool):
+        self.closed = False
+        if closable:
+            self.aclose = self._aclose
+
+    async def _aclose(self):
+        self.closed = True
+
+    async def fetch_submissions(self):
+        return []
+
+    async def fetch_problems(self):
+        return []
+
+    async def fetch_teams(self):
+        return None
+
+
+def _make_lifespan_app(closable: bool):
+    from pta2ccs.poller import Poller
+    client = _LifespanFakeClient(closable)
+    settings = Settings(contest_id="c1", pta_cookie="c",
+                        poll_interval_seconds=0.01, config_poll_seconds=0.01)
+    poller = Poller(client, Store(), settings, {"contest": {}})
+    app = create_app(Store(), poller=poller, contest_id="c1")
+    return app, client
+
+
+def test_lifespan_closes_poller_client():
+    app, client = _make_lifespan_app(closable=True)
+    with TestClient(app):
+        assert client.closed is False
+    assert client.closed is True
+
+
+def test_lifespan_tolerates_client_without_aclose():
+    app, client = _make_lifespan_app(closable=False)
+    with TestClient(app):
+        pass  # shutdown must not raise AttributeError on missing aclose

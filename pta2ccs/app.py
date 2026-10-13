@@ -20,7 +20,7 @@ from .translate import ContestData
 COLLECTIONS = {
     "groups": ("groups", None),
     "organizations": ("organizations", None),
-    "teams": ("teams", None),
+    "teams": ("teams", ("organization_id",)),
     "problems": ("problems", None),
     "languages": ("languages", None),
     "judgement-types": ("judgement_types", None),
@@ -52,6 +52,11 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
             poller.stop()
         if task is not None:
             await task
+        if poller is not None:
+            try:
+                await poller.client.aclose()
+            except AttributeError:
+                pass  # client without aclose (e.g. test fakes)
 
     app = FastAPI(title="pta2ccs", lifespan=lifespan)
     app.state.store = store
@@ -135,7 +140,9 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
             for fname in filters:
                 val = request.query_params.get(fname)
                 if val is not None:
-                    items = [i for i in items if i.get(fname) == val]
+                    # Contest API: empty-string query value matches null attributes
+                    want = val if val != "" else None
+                    items = [i for i in items if i.get(fname) == want]
         return items
 
     @app.get("/contests/{cid}/{collection}/{item_id}")
