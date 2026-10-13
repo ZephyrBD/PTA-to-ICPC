@@ -1,0 +1,85 @@
+import datetime as dt
+
+from pta2ccs.scoreboard import compute_scoreboard
+from pta2ccs.translate import BUILTIN_JUDGEMENT_TYPES, ContestData
+
+TZ = dt.timezone(dt.timedelta(hours=8))
+NOW = dt.datetime(2023, 5, 21, 10, 0, 0, tzinfo=TZ)
+
+
+def make_data() -> ContestData:
+    data = ContestData()
+    data.contest = {
+        "id": "1", "start_time": "2023-05-21T09:00:00+08:00",
+        "duration": "5:00:00", "penalty_time": "0:20:00",
+        "scoreboard_type": "pass-fail", "scoreboard_freeze_duration": "0:00:00",
+    }
+    data.state = {
+        "started": "2023-05-21T09:00:00+08:00", "ended": None, "frozen": None,
+        "thawed": None, "finalized": None, "end_of_updates": None,
+    }
+    data.teams = {
+        "D22": {"id": "D22", "group_id": "D"},
+        "D23": {"id": "D23", "group_id": "D"},
+        "E01": {"id": "E01", "group_id": "E"},
+    }
+    data.problems = {"A": {"id": "A"}, "B": {"id": "B"}}
+    data.judgement_types = {k: dict(v, id=k) for k, v in BUILTIN_JUDGEMENT_TYPES.items()}
+    rows = [
+        ("1", "D22", "A", "0:05:00", "AC"),
+        ("2", "D22", "B", "0:10:00", "WA"),
+        ("3", "D22", "B", "0:30:00", "AC"),
+        ("4", "D23", "A", "0:07:00", "AC"),
+        ("5", "E01", "A", "0:01:00", None),
+    ]
+    for sid, team, prob, ct, jtype in rows:
+        data.submissions[sid] = {
+            "id": sid, "team_id": team, "problem_id": prob,
+            "contest_time": ct, "time": "2023-05-21T09:00:00+08:00",
+        }
+        data.judgements[sid] = {
+            "id": sid, "submission_id": sid, "judgement_type_id": jtype,
+        }
+    return data
+
+
+def test_solved_and_penalty():
+    sb = compute_scoreboard(make_data(), NOW)
+    rows = {r["team_id"]: r for r in sb["rows"]}
+    d22 = rows["D22"]
+    assert d22["score"]["num_solved"] == 2
+    # A solved at 5min; B solved at 30min + 1 penalty * 20min = 50min; total 55min
+    assert d22["score"]["total_time"] == "0:55:00"
+
+
+def test_pending_counted():
+    sb = compute_scoreboard(make_data(), NOW)
+    rows = {r["team_id"]: r for r in sb["rows"]}
+    e01 = rows["E01"]
+    assert e01["score"]["num_solved"] == 0
+    pa = next(p for p in e01["problems"] if p["problem_id"] == "A")
+    assert pa["num_pending"] == 1
+    assert pa["solved"] is False
+
+
+def test_rank_order_and_ties():
+    sb = compute_scoreboard(make_data(), NOW)
+    ranked = [(r["rank"], r["team_id"]) for r in sb["rows"]]
+    assert ranked[0][1] == "D22"  # 2 solved beats 1 solved
+    assert ranked[1][1] == "D23"
+    assert ranked[2][1] == "E01"
+
+
+def test_group_filter():
+    sb = compute_scoreboard(make_data(), NOW, group_id="D")
+    assert {r["team_id"] for r in sb["rows"]} == {"D22", "D23"}
+
+
+def test_output_shape():
+    sb = compute_scoreboard(make_data(), NOW)
+    assert sb["state"] == make_data().state
+    assert sb["time"] == "2023-05-21T10:00:00+08:00"
+    assert sb["contest_time"] == "1:00:00"
+    for r in sb["rows"]:
+        assert set(r) == {"rank", "team_id", "score", "problems"}
+        assert set(r["score"]) == {"num_solved", "total_time"}
