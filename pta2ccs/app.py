@@ -58,13 +58,22 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
     app.state.poller = poller
     app.state.contest_id = contest_id
 
-    @app.exception_handler(404)
-    async def not_found(request: Request, exc):
-        detail = getattr(exc, "detail", None)
+    @app.exception_handler(HTTPException)
+    async def http_exception(request: Request, exc: HTTPException):
+        # Class-level (not status-404): Starlette checks status handlers
+        # first, so a 404-only handler left other statuses (e.g. the event
+        # feed's 400) to FastAPI's default, which nests error_body under
+        # {"detail": ...}. Flattening every error_body here keeps one error
+        # shape; the 404 fallback for plain-string details is unchanged.
+        detail = exc.detail
         if isinstance(detail, dict) and "code" in detail:
-            return JSONResponse(status_code=404, content=detail)
-        return JSONResponse(status_code=404,
-                            content=error_body(404, "not found"))
+            return JSONResponse(status_code=exc.status_code, content=detail,
+                                headers=exc.headers)
+        if exc.status_code == 404:
+            return JSONResponse(status_code=404,
+                                content=error_body(404, "not found"))
+        return JSONResponse(status_code=exc.status_code,
+                            content={"detail": detail}, headers=exc.headers)
 
     def require_cid(cid: str) -> None:
         if cid != contest_id:

@@ -110,10 +110,3 @@ def test_default_poller_client_gets_manual_timezone():
     poller, tz = _make_poller(settings, manual, Store())
     assert tz == "+09:00"
     assert poller.client._tz == "+09:00"
-
-
-def test_event_feed_placeholder_returns_501():
-    r = make_client().get("/contests/c1/event-feed")
-    assert r.status_code == 501
-    # default FastAPI HTTPException envelope (only 404 has a custom handler)
-    assert r.json()["detail"]["code"] == 501

@@ -83,7 +83,7 @@ def _parse_user(user: str) -> tuple[str, str, str] | None:
     """Return (team_id, team_name, group_id) or None.
 
     Seat form "D22 队名" is tried first (room letter = group); then the real
-    PTA user form "2026175015 选手4663" (studentNumber + space + name) with a
+    PTA user form "2026175015 昵称4663" (studentNumber + space + name) with a
     synthetic group "0".
     """
     text = user.strip()

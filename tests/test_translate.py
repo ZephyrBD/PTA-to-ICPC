@@ -136,11 +136,11 @@ def test_unparsable_user_log_does_not_leak_user(caplog):
 def test_student_number_user_format():
     rows = [
         {"id": "401", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
-         "user": "2026175015 选手4663", "problem_index": "A", "language": "cpp"},
+         "user": "2026175015 昵称4663", "problem_index": "A", "language": "cpp"},
     ]
     data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
     team = data.teams["2026175015"]
-    assert team["name"] == "选手4663"
+    assert team["name"] == "昵称4663"
     assert team["group_id"] == "0"
     assert data.groups["0"]["id"] == "0"
     assert data.submissions["401"]["team_id"] == "2026175015"
