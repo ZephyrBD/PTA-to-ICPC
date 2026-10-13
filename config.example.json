@@ -1,0 +1,9 @@
+{
+  "contest_id": "REPLACE_WITH_PTA_PROBLEM_SET_ID",
+  "pta_cookie": "REPLACE_WITH_PTASession_VALUE",
+  "manual_dir": "manual",
+  "poll_interval_seconds": 5.0,
+  "config_poll_seconds": 60.0,
+  "host": "127.0.0.1",
+  "port": 8000
+}

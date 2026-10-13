@@ -1,0 +1,11 @@
+{
+  "contest": {
+    "name": "示例赛",
+    "formal_name": "示例赛（正式赛）",
+    "start_time": "2026-05-21T09:00:00+08:00",
+    "duration": "5:00:00",
+    "penalty_time": "0:20:00",
+    "scoreboard_freeze_duration": "0:00:00",
+    "pta_timezone": "+08:00"
+  }
+}
