@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 
 from pta2ccs.translate import translate
 
@@ -119,3 +120,14 @@ def test_translate_accepts_enum_status():
     assert data.judgements["202"]["judgement_type_id"] == "WA"
     assert data.judgements["203"]["judgement_type_id"] is None
     assert data.judgements["203"]["end_time"] is None
+
+
+def test_unparsable_user_log_does_not_leak_user(caplog):
+    rows = [
+        {"id": "301", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
+         "user": "无法解析的用户-secret", "problem_index": "A", "language": "cpp"},
+    ]
+    with caplog.at_level(logging.WARNING):
+        translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
+    assert "301" in caplog.text
+    assert "无法解析的用户-secret" not in caplog.text

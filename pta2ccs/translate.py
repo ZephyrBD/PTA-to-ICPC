@@ -139,11 +139,11 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
         try:
             ts = parse_pta_time(row["submit_time"], tz)
         except (KeyError, ValueError, TypeError) as e:
-            log.warning("skip submission with bad time: %s (%s)", row, e)
+            log.warning("skip submission with bad time: %s (%s)", row.get("id"), e)
             continue
         parsed = _parse_user(str(row.get("user", "")))
         if parsed is None:
-            log.warning("skip submission with unparsable user: %s", row)
+            log.warning("skip submission with unparsable user: %s (unparsable user field)", row.get("id"))
             continue
         team_id, team_name = parsed
         room = team_id[0]
