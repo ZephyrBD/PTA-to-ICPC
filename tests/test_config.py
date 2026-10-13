@@ -33,13 +33,15 @@ def test_load_settings_reads_all_fields(tmp_path: Path):
 def test_load_settings_missing_key_fails(tmp_path: Path):
     p = tmp_path / "config.json"
     p.write_text(json.dumps({"contest_id": "1"}), encoding="utf-8")
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         load_settings(p)
+    assert excinfo.value.code == 1
 
 
 def test_load_settings_missing_file_fails(tmp_path: Path):
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         load_settings(tmp_path / "nope.json")
+    assert excinfo.value.code == 1
 
 
 def write_manual(dirpath: Path, name: str, data: dict) -> None:
@@ -97,5 +99,39 @@ def test_load_manual_non_dict_json_fails(tmp_path: Path):
     mdir = tmp_path / "manual"
     mdir.mkdir()
     (mdir / "bad.json").write_text("[1,2]", encoding="utf-8")
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as excinfo:
         load_manual(mdir)
+    assert excinfo.value.code == 1
+
+
+def test_load_manual_non_dict_id_value_fails_single_file(tmp_path: Path):
+    mdir = tmp_path / "manual"
+    write_manual(mdir, "a.json", {"teams": {"D22": "oops"}})
+    with pytest.raises(SystemExit) as excinfo:
+        load_manual(mdir)
+    assert excinfo.value.code == 1
+
+
+def test_load_manual_non_dict_id_value_fails_on_merge(tmp_path: Path):
+    mdir = tmp_path / "manual"
+    write_manual(mdir, "10-a.json", {"teams": {"D22": "oops"}})
+    write_manual(mdir, "20-b.json", {"teams": {"D22": {"name": "x"}}})
+    with pytest.raises(SystemExit) as excinfo:
+        load_manual(mdir)
+    assert excinfo.value.code == 1
+
+
+def test_load_manual_null_overrides_fails(tmp_path: Path):
+    mdir = tmp_path / "manual"
+    write_manual(mdir, "a.json", {"judgement_types": {"overrides": None}})
+    with pytest.raises(SystemExit) as excinfo:
+        load_manual(mdir)
+    assert excinfo.value.code == 1
+
+
+def test_load_manual_scalar_overrides_fails(tmp_path: Path):
+    mdir = tmp_path / "manual"
+    write_manual(mdir, "a.json", {"judgement_types": {"overrides": "WA"}})
+    with pytest.raises(SystemExit) as excinfo:
+        load_manual(mdir)
+    assert excinfo.value.code == 1

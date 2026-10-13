@@ -64,17 +64,24 @@ def load_manual(manual_dir: Path) -> dict:
             merged["contest"].update(contest)
         jt = data.get("judgement_types")
         if isinstance(jt, dict):
-            merged["judgement_types_overrides"].update(jt.get("overrides", {}))
+            overrides = jt.get("overrides", {})
+            if not isinstance(overrides, dict):
+                _fail(f"judgement_types.overrides in {f} must be an object")
+            merged["judgement_types_overrides"].update(overrides)
         for key in _ID_SECTIONS:
             section = data.get(key)
             if section is None:
                 continue
             if isinstance(section, dict):
                 for k, v in section.items():
-                    if isinstance(v, dict):
-                        merged[key].setdefault(k, {}).update(v)
-                    else:
-                        merged[key][k] = v
+                    if not isinstance(v, dict):
+                        _fail(f"{key}.{k} in {f} must be an object")
+                    if not isinstance(merged[key].get(k), (dict, type(None))):
+                        _fail(
+                            f"{key}.{k} in {f} conflicts with a non-object value "
+                            "set by an earlier manual file"
+                        )
+                    merged[key].setdefault(k, {}).update(v)
             elif isinstance(section, list):
                 for item in section:
                     if not isinstance(item, dict) or "id" not in item:
