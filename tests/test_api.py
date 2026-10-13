@@ -87,6 +87,15 @@ def test_404_unknown_id_and_path():
     assert r.status_code == 404
 
 
+def test_read_routes_404_on_empty_store():
+    # empty Store: snapshot() is None; read routes must 404, not AttributeError-500
+    c = TestClient(create_app(Store(), poller=None, contest_id="c1"))
+    for path in ("/contests/c1/state", "/contests/c1/submissions"):
+        r = c.get(path)
+        assert r.status_code == 404
+        assert r.json() == {"code": 404, "message": "contest data not ready"}
+
+
 def test_healthz_without_poller():
     r = make_client().get("/healthz")
     assert r.status_code == 200

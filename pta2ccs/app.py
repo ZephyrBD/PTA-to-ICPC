@@ -15,6 +15,7 @@ from .pta.client import PtaClient
 from .scoreboard import compute_scoreboard
 from .store import Store
 from .timefmt import parse_offset
+from .translate import ContestData
 
 COLLECTIONS = {
     "groups": ("groups", None),
@@ -69,6 +70,12 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
         if cid != contest_id:
             raise HTTPException(404, error_body(404, f"contest not found: {cid}"))
 
+    def require_snap() -> ContestData:
+        snap = store.snapshot()
+        if snap is None:
+            raise HTTPException(404, error_body(404, "contest data not ready"))
+        return snap
+
     @app.get("/")
     async def api_info():
         return make_api_info()
@@ -90,21 +97,18 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
     @app.get("/contests/{cid}")
     async def contest(cid: str):
         require_cid(cid)
-        snap = store.snapshot()
-        if snap is None:
-            raise HTTPException(404, error_body(404, "contest data not ready"))
-        return snap.contest
+        return require_snap().contest
 
     @app.get("/contests/{cid}/state")
     async def state(cid: str):
         require_cid(cid)
-        return store.snapshot().state
+        return require_snap().state
 
     @app.get("/contests/{cid}/scoreboard")
     async def scoreboard(cid: str, group_id: str | None = None):
         require_cid(cid)
         now = _now_local(tz)
-        return compute_scoreboard(store.snapshot(), now, group_id=group_id)
+        return compute_scoreboard(require_snap(), now, group_id=group_id)
 
     # registered before the {collection} catch-all so the literal
     # /contests/{cid}/event-feed path is not shadowed (matched first)
@@ -117,7 +121,7 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
         if collection not in COLLECTIONS:
             raise HTTPException(404, error_body(404, f"unknown collection: {collection}"))
         attr, filters = COLLECTIONS[collection]
-        items = list(getattr(store.snapshot(), attr).values())
+        items = list(getattr(require_snap(), attr).values())
         if filters:
             for fname in filters:
                 val = request.query_params.get(fname)
@@ -131,7 +135,7 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
         if collection not in COLLECTIONS:
             raise HTTPException(404, error_body(404, f"unknown collection: {collection}"))
         attr, _ = COLLECTIONS[collection]
-        obj = getattr(store.snapshot(), attr).get(item_id)
+        obj = getattr(require_snap(), attr).get(item_id)
         if obj is None:
             name = ITEM_SINGULAR.get(collection, collection)
             raise HTTPException(404, error_body(404, f"{name} not found: {item_id}"))
