@@ -29,7 +29,8 @@ BUILTIN_JUDGEMENT_TYPES = {
     "SE": {"name": "Submission Error", "penalty": False, "solved": False},
 }
 
-USER_RE = re.compile(r"^([A-Za-z]\d{1,2})\s+(\S.*)$")
+SEAT_USER_RE = re.compile(r"^([A-Za-z]\d{1,2})\s+(\S.*)$")
+TOKEN_USER_RE = re.compile(r"^([A-Za-z0-9]{3,36})\s+(\S.*)$")
 
 
 @dataclass
@@ -78,11 +79,22 @@ def _build_state(contest: dict, now: dt.datetime) -> dict:
     return state
 
 
-def _parse_user(user: str) -> tuple[str, str] | None:
-    m = USER_RE.match(user.strip())
-    if not m:
-        return None
-    return sanitize_id(m.group(1).upper()), m.group(2)
+def _parse_user(user: str) -> tuple[str, str, str] | None:
+    """Return (team_id, team_name, group_id) or None.
+
+    Seat form "D22 队名" is tried first (room letter = group); then the real
+    PTA user form "2026175015 选手4663" (studentNumber + space + name) with a
+    synthetic group "0".
+    """
+    text = user.strip()
+    m = SEAT_USER_RE.match(text)
+    if m:
+        team_id = sanitize_id(m.group(1).upper())
+        return team_id, m.group(2), team_id[0]
+    m = TOKEN_USER_RE.match(text)
+    if m:
+        return sanitize_id(m.group(1)), m.group(2), "0"
+    return None
 
 
 def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
@@ -145,8 +157,7 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
         if parsed is None:
             log.warning("skip submission with unparsable user: %s (unparsable user field)", row.get("id"))
             continue
-        team_id, team_name = parsed
-        room = team_id[0]
+        team_id, team_name, room = parsed
         team = data.teams.get(team_id)
         if team is None:
             data.teams[team_id] = {

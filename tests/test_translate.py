@@ -131,3 +131,28 @@ def test_unparsable_user_log_does_not_leak_user(caplog):
         translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
     assert "301" in caplog.text
     assert "无法解析的用户-secret" not in caplog.text
+
+
+def test_student_number_user_format():
+    rows = [
+        {"id": "401", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
+         "user": "2026175015 选手4663", "problem_index": "A", "language": "cpp"},
+    ]
+    data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
+    team = data.teams["2026175015"]
+    assert team["name"] == "选手4663"
+    assert team["group_id"] == "0"
+    assert data.groups["0"]["id"] == "0"
+    assert data.submissions["401"]["team_id"] == "2026175015"
+
+
+def test_seat_form_still_wins_over_token_fallback():
+    rows = [
+        {"id": "402", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
+         "user": "D22 鸡你太美队", "problem_index": "A", "language": "cpp"},
+        {"id": "403", "submit_time": "2023/05/21 09:11:00", "status": "答案正确",
+         "user": "无法解析的用户", "problem_index": "A", "language": "cpp"},
+    ]
+    data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
+    assert data.teams["D22"]["group_id"] == "D"
+    assert "403" not in data.submissions
