@@ -1,5 +1,7 @@
 import datetime as dt
 
+import pytest
+
 from pta2ccs.models import error_body, make_access, make_api_info, sanitize_id
 from pta2ccs.timefmt import parse_pta_time, parse_reltime, to_iso_time, to_reltime
 
@@ -21,6 +23,11 @@ def test_parse_pta_time():
 def test_to_iso_time():
     d = parse_pta_time("2023/05/07 17:59:08", "+08:00")
     assert to_iso_time(d) == "2023-05-07T17:59:08+08:00"
+
+
+def test_to_iso_time_rejects_naive():
+    with pytest.raises(ValueError):
+        to_iso_time(dt.datetime(2023, 5, 7, 17, 59, 8))
 
 
 def test_to_reltime():

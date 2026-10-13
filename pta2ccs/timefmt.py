@@ -15,6 +15,8 @@ def parse_pta_time(s: str, tz: str) -> dt.datetime:
 
 
 def to_iso_time(d: dt.datetime) -> str:
+    if d.tzinfo is None:
+        raise ValueError("to_iso_time requires an aware datetime")
     off = d.strftime("%z")
     tail = off[:3] + ":" + off[3:] if off else "+00:00"
     return d.strftime("%Y-%m-%dT%H:%M:%S") + tail
