@@ -148,11 +148,74 @@ def test_fetch_problems_from_labels_endpoint():
 
     problems = fetch_problems(make_client(handle))
     assert len(problems) == len(payload["labels"])
-    assert [p["id"] for p in problems] == [l["id"] for l in payload["labels"]]
+    # id is the PTA label, not the raw problemSetProblemId: submissions'
+    # problem_index resolves to the label, so both must agree.
+    assert [p["id"] for p in problems] == [l["label"] for l in payload["labels"]]
     assert problems[0]["label"] == payload["labels"][0]["label"] == "1-1"
     assert all("title" in p and p["id"] for p in problems)
+    assert [p["ordinal"] for p in problems] == list(
+        range(1, len(payload["labels"]) + 1))
 
 
 def test_fetch_teams_returns_none():
     client = make_client(lambda request: httpx.Response(500))
     assert asyncio.run(_run(client, client.fetch_teams())) is None
+
+
+def test_problem_ids_agree_with_submission_problem_index():
+    """problems[].id must be a member of the ids submissions reference.
+
+    Live smoke (2026-10-13) showed raw problemSetProblemId on problems but
+    labels on submissions → scoreboard cells all `num_judged: 0`.
+    """
+    subs_payload = load("submissions_page1.json")
+    probs_payload = load("problems.json")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/problem-types"):
+            return httpx.Response(200, json=probs_payload)
+        return httpx.Response(200, json=subs_payload)
+
+    async def both(client: PtaClient):
+        try:
+            return (await client.fetch_problems(),
+                    await client.fetch_submissions())
+        finally:
+            await client.aclose()
+
+    problems, rows = asyncio.run(both(make_client(handle)))
+    ids = {p["id"] for p in problems}
+    assert ids == {l["label"] for l in probs_payload["labels"]}
+    used = {r["problem_index"] for r in rows}
+    assert used and used <= ids
+
+
+def test_missing_label_falls_back_to_raw_problem_id_on_both_sides():
+    probs_payload = {"labels": [{"id": "424242", "title": "T"}]}
+    subs_payload = {
+        "submissions": [{
+            "id": "9", "userId": "u1", "problemSetProblemId": "424242",
+            "submitAt": "2026-10-13T11:00:00Z", "status": "ACCEPTED",
+            "compiler": "GXX",
+        }],
+        "hasBefore": False, "hasAfter": False,
+        "examMemberByUserId": {"u1": {"studentUserId": "s1"}},
+        "studentUserById": {"s1": {"studentNumber": "2025000001", "name": "N"}},
+        "problemSetProblemById": {"424242": {"id": "424242"}},
+    }
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/problem-types"):
+            return httpx.Response(200, json=probs_payload)
+        return httpx.Response(200, json=subs_payload)
+
+    async def both(client: PtaClient):
+        try:
+            return (await client.fetch_problems(),
+                    await client.fetch_submissions())
+        finally:
+            await client.aclose()
+
+    problems, rows = asyncio.run(both(make_client(handle)))
+    assert problems[0]["id"] == "424242"
+    assert rows[0]["problem_index"] == "424242"

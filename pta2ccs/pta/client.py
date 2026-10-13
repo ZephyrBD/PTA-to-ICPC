@@ -88,20 +88,30 @@ class PtaClient:
         return list(out.values())
 
     async def fetch_problems(self) -> list[dict]:
-        """Problem list from the labels endpoint the submissions UI uses."""
+        """Problem list from the labels endpoint the submissions UI uses.
+
+        `id` is the PTA **label** (e.g. "1-3"), not the raw
+        `problemSetProblemId` — submissions normalize `problem_index` to the
+        label too, so both sides of `submissions[].problem_id` agree
+        (live smoke 2026-10-13: raw ids here vs labels on submissions left
+        every scoreboard cell at `num_judged: 0`). `ordinal` follows the
+        response order: `indexInProblemPool` is per-pool and was 1 for all
+        15 problems of the probed set (`problemPoolIndex` is the global
+        pool order but collides for multi-problem pools).
+        """
         data = await self._get_json(self.problems_url)
         labels = data.get("labels") if isinstance(data, dict) else data
         out: list[dict] = []
         for i, p in enumerate(labels or []):
-            pid = str(p.get("id", i))
+            raw_id = str(p.get("id", i))
             label = p.get("label")
             if label:
-                self._labels[pid] = label
+                self._labels[raw_id] = str(label)
             out.append({
-                "id": pid,
+                "id": str(label) if label else raw_id,
                 "label": label,
                 "title": p.get("title", ""),
-                "ordinal": p.get("indexInProblemPool", i + 1),
+                "ordinal": i + 1,
             })
         return out
 
@@ -145,7 +155,9 @@ class PtaClient:
         label = info.get("label")
         if label:
             return str(label)
-        return self._labels.get(str(pid), "")
+        # Same fallback as fetch_problems' id: never emit "" so the row still
+        # matches a problems entry when the label map is incomplete.
+        return self._labels.get(str(pid)) or str(pid)
 
     def _normalize(self, row: dict, data: dict) -> dict:
         compiler = row.get("language") or row.get("compiler")
