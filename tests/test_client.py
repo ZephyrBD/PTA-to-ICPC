@@ -86,7 +86,9 @@ def test_fetch_submissions_normalizes_rows():
     assert first["team_id"] == team_id
     assert first["team_name"] == team_name
     assert "user" not in first
-    assert all(r["team_id"] and r["team_name"] is not None for r in rows)
+    assert all(r["team_id"] for r in rows)
+    assert [r["team_name"] for r in rows] == [
+        expected_team(payload, raw)[1] for raw in raw_rows]  # studentUserById names
     dump = json.dumps(rows, ensure_ascii=False)
     for stu in payload["studentUserById"].values():
         assert stu["studentNumber"] not in dump
@@ -228,6 +230,92 @@ def test_fetch_teams_normalizes_roster():
         assert stu["studentNumber"] not in dump
     org_names = {t["organization_name"] for t in teams}
     assert org_names == {g["name"] for g in payload["userGroups"].values()}
+
+
+def test_fetch_teams_warns_on_truncated_roster(caplog):
+    """total=60 but pages stop early → roster truncation warning
+    (logger pta2ccs.pta.client)."""
+    payload = load_members()
+    pool = payload["members"][:40]
+    page_size = 20
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page"))
+        start = page * page_size
+        return httpx.Response(200, json=dict(
+            payload, total=60, members=pool[start:start + page_size]))
+
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.pta.client"):
+        teams = fetch_teams(make_client(handle, page_limit=page_size))
+    assert len(teams) == 40
+    assert any("truncated" in rec.message and "40" in rec.message
+               and "60" in rec.message for rec in caplog.records)
+
+
+def test_fetch_teams_sanitizes_group_id_with_space():
+    payload = {
+        "total": 1,
+        "members": [{"id": "m1", "userGroupId": "G 1",
+                     "userId": "u1", "studentUserId": "s1"}],
+        "userGroups": {"G 1": {"name": "机房 1"}},
+        "userById": {"u1": {"nickname": "n"}},
+        "studentUserById": {"s1": {"name": "张三"}},
+    }
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    teams = fetch_teams(make_client(handle))
+    assert teams[0]["group_id"] == "G-1"
+    assert teams[0]["organization_id"] == "G-1"
+    assert teams[0]["organization_name"] == "机房 1"
+
+
+def test_fetch_teams_missing_group_id_is_none():
+    payload = {
+        "total": 2,
+        "members": [
+            {"id": "m1", "userId": "u1", "studentUserId": "s1"},
+            {"id": "m2", "userGroupId": "1901", "userId": "u2",
+             "studentUserId": "s2"},
+        ],
+        "userGroups": {"1901": {"name": "DSA"}},
+        "userById": {},
+        "studentUserById": {"s1": {"name": "甲"}, "s2": {"name": "乙"}},
+    }
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    by_id = {t["id"]: t for t in fetch_teams(make_client(handle))}
+    assert by_id["s1"]["group_id"] is None
+    assert by_id["s1"]["organization_id"] is None
+    assert by_id["s1"]["organization_name"] is None
+    assert by_id["s2"]["organization_id"] == "1901"
+    assert by_id["s2"]["organization_name"] == "DSA"
+
+
+def test_fetch_teams_skips_member_without_any_id(caplog):
+    payload = {
+        "total": 2,
+        "members": [
+            {"userGroupId": "1901"},  # no studentUserId/userId/id
+            {"id": "m2", "userGroupId": "1901", "userId": "u2",
+             "studentUserId": "s2"},
+        ],
+        "userGroups": {"1901": {"name": "DSA"}},
+        "userById": {},
+        "studentUserById": {"s2": {"name": "乙"}},
+    }
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.pta.client"):
+        teams = fetch_teams(make_client(handle))
+    assert [t["id"] for t in teams] == ["s2"]
+    assert not any(t["id"] == "None" for t in teams)
+    assert any("skip member" in rec.message for rec in caplog.records)
 
 
 def test_submission_team_fallback_when_chain_broken():

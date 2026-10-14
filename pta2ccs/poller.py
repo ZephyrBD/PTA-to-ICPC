@@ -47,7 +47,14 @@ class Poller:
                 raw_problems = await self.client.fetch_problems()
                 # failure raises → whole poll cycle retried (never a
                 # partial roster)
-                self._last_teams = await self.client.fetch_teams()
+                fetched = await self.client.fetch_teams()
+                if fetched or not self._last_teams:
+                    self._last_teams = fetched
+                else:
+                    # 200-but-empty /members would wipe zero-submission
+                    # teams until the next config round: keep last roster
+                    log.warning("empty roster from /members; keeping "
+                                "previous %d teams", len(self._last_teams))
                 self._last_config_poll = _now()
             else:
                 snap = self.store.snapshot()

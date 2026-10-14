@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import time
 
 from pta2ccs.config import Settings
 from pta2ccs.poller import Poller
@@ -96,3 +98,20 @@ def test_need_config_fetches_teams_and_non_config_uses_cached_roster():
     snap = store.snapshot()
     assert ZERO_SUB_TEAM_ID in snap.teams  # cached roster passed to translate
     assert snap.teams[ZERO_SUB_TEAM_ID]["name"] == "无提交队"
+
+
+def test_empty_roster_on_config_round_keeps_previous_cache(caplog):
+    # 200-but-empty /members on a config round must not wipe the cached
+    # roster (zero-submission teams would vanish until the next config round)
+    poller, client, store = make_poller(config_poll_seconds=0.01)
+    asyncio.run(poller.poll_once())
+    assert ZERO_SUB_TEAM_ID in store.snapshot().teams
+    client.teams = []  # next config round returns an empty roster
+    time.sleep(0.02)   # ...and it must actually be a config round
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+        asyncio.run(poller.poll_once())
+    snap = store.snapshot()
+    assert ZERO_SUB_TEAM_ID in snap.teams
+    assert snap.teams[ZERO_SUB_TEAM_ID]["name"] == "无提交队"
+    assert snap.organizations["1901545194649161728"]["name"] == "DSA_2024"
+    assert any("empty roster" in rec.message for rec in caplog.records)

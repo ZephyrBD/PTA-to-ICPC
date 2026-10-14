@@ -101,6 +101,27 @@ def test_roster_teams_organizations_and_zero_submission_survival():
     assert data.groups["D"]["name"] == "4078"
 
 
+def test_roster_sanitizes_group_ids_and_null_missing():
+    roster = [
+        {"id": "t1", "name": "甲", "label": "甲", "group_id": "G 1",
+         "organization_id": "G 1", "organization_name": "机房 1"},
+        {"id": "t2", "name": "乙", "label": "乙", "group_id": None,
+         "organization_id": None, "organization_name": None},
+    ]
+    data = translate("999", MANUAL, [], RAW_PROBLEMS, roster, NOW)
+    t1 = data.teams["t1"]
+    assert t1["group_id"] == t1["organization_id"] == "G-1"
+    # org/group keyed on the same sanitized id the team references
+    assert data.organizations["G-1"]["name"] == "机房 1"
+    assert data.groups["G-1"]["name"] == "机房 1"
+    assert "G 1" not in data.organizations
+    t2 = data.teams["t2"]
+    assert t2["group_id"] is None
+    assert t2["organization_id"] is None
+    assert "" not in data.organizations
+    assert set(data.organizations) == {"org1", "G-1"}
+
+
 def test_roster_name_not_overwritten_by_submission_backfill():
     roster = [{"id": "D22", "name": "真名", "label": "真名", "group_id": "G1",
                "organization_id": "G1", "organization_name": "DSA_2024"}]

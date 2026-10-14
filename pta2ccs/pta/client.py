@@ -133,21 +133,24 @@ class PtaClient:
 
         Page/limit pagination with a real `total` (NOT the submissions
         cursor): loop while a page returns exactly `limit` rows, with a
-        sane page-count guard. Every member becomes a team — id =
-        studentUserId (sanitized; digits pass through), name = label =
-        姓名, group_id = organization_id = raw userGroupId (long numeric
-        string). Student numbers are resolved to names but NEVER appear
-        in the output.
+        sane page-count guard; warn when `total` says rows were missed.
+        Every member becomes a team — id = studentUserId (sanitized;
+        digits pass through), name = label = 姓名, group_id =
+        organization_id = sanitized userGroupId (None when the member
+        has none). Student numbers are resolved to names but NEVER
+        appear in the output.
         """
         members: list[dict] = []
         groups: dict[str, str] = {}
         students: dict[str, dict] = {}
         users: dict[str, dict] = {}
+        total = 0
         for page in range(MAX_MEMBERS_PAGES):
             params = {"page": page, "limit": self._page_limit,
                       "filter": MEMBERS_FILTER}
             data = await self._get_json(self.members_url, params)
-            groups.update({str(gid): str((g or {}).get("name") or gid)
+            total = int(data.get("total") or 0)
+            groups.update({sanitize_id(str(gid)): str((g or {}).get("name") or gid)
                            for gid, g in (data.get("userGroups") or {}).items()})
             students.update(data.get("studentUserById") or {})
             users.update(data.get("userById") or {})
@@ -155,19 +158,27 @@ class PtaClient:
             members.extend(rows)
             if len(rows) < self._page_limit:
                 break
+        if total > 0 and len(members) < total:
+            log.warning("roster truncated: fetched %d of %d members "
+                        "reported by /members total", len(members), total)
         out: dict[str, dict] = {}
         for m in members:
             uid = m.get("userId")
             sid = m.get("studentUserId")
             stu = students.get(sid) or {}
             nick = users.get(uid) or {}
-            gid = str(m.get("userGroupId") or "")
-            team_id = sanitize_id(str(sid or uid or m.get("id")))
+            raw_gid = m.get("userGroupId")
+            gid = sanitize_id(str(raw_gid)) if raw_gid not in (None, "") else None
+            raw_team_id = sid or uid or m.get("id")
+            if raw_team_id in (None, ""):
+                log.warning("skip member row with no studentUserId/userId/id")
+                continue
+            team_id = sanitize_id(str(raw_team_id))
             name = str(stu.get("name") or nick.get("nickname") or "")
             out.setdefault(team_id, {
                 "id": team_id, "name": name, "label": name,
                 "group_id": gid, "organization_id": gid,
-                "organization_name": groups.get(gid, gid),
+                "organization_name": groups.get(gid, gid) if gid else None,
             })
         return list(out.values())
 

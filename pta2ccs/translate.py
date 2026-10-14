@@ -123,14 +123,18 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
         team = data.teams.setdefault(tid, {"id": tid})
         team.setdefault("name", str(row.get("name") or tid))
         team.setdefault("label", str(row.get("label") or tid))
-        team.setdefault("group_id", row.get("group_id"))
-        team.setdefault("organization_id", row.get("organization_id"))
+        # ids sanitized once here so team refs and organizations/groups
+        # keys always agree (client normalizes too; sanitize is idempotent)
+        gid = row.get("group_id")
+        org = row.get("organization_id")
+        gid = sanitize_id(str(gid)) if gid not in (None, "") else None
+        org = sanitize_id(str(org)) if org not in (None, "") else None
+        team.setdefault("group_id", gid)
+        team.setdefault("organization_id", org)
         team.setdefault("icpc_id", row.get("icpc_id"))
-        # organizations (and mirrored groups) from the PTA user groups;
-        # raw long numeric ids pass sanitize_id unchanged.
-        oid = row.get("organization_id") or row.get("group_id")
+        # organizations (and mirrored groups) from the PTA user groups
+        oid = org or gid
         if oid:
-            oid = sanitize_id(str(oid))
             oname = str(row.get("organization_name") or oid)
             data.organizations.setdefault(oid, {"id": oid, "name": oname})
             data.groups.setdefault(oid, {"id": oid, "name": oname})
