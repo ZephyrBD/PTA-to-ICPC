@@ -51,13 +51,15 @@ ROSTER = [
      "organization_name": "DSA_2025"},
 ]
 
-# fetch_contest_meta() shape (live 2026-10-14: hidingTime 360 → 6h freeze)
+# fetch_contest_meta() shape (live 2026-10-14: hidingTime 360 min AFTER start,
+# duration 111600 s → freeze = 111600 − 360×60 = 90000 s = 25:00:00)
 META = {
+    "name": "示例比赛",
     "startAt": "2026-10-13T08:00:00Z",
     "endAt": "2026-10-14T15:00:00Z",
     "durationSeconds": 111600,
     "compilers": ["GXX", "JAVAC", "CANGJIE"],
-    "scoreboardFreezeSeconds": 21600,
+    "scoreboardFreezeSeconds": 90000,
 }
 
 
@@ -246,25 +248,75 @@ def test_missing_team_id_log_does_not_leak_team_name(caplog):
 
 def test_meta_fills_contest_fields_when_manual_absent():
     """manual explicit > meta > built-in default: with no manual values the
-    meta startAt/duration/freeze win (live shape: 31h contest, 6h freeze)."""
+    meta startAt/duration/freeze win (live shape: 31h contest, freeze 25:00:00
+    = 111600 − 360×60 → frozen at start+6h)."""
     manual = {"contest": {"name": "meta赛", "pta_timezone": TZ}}
-    # after the freeze moment (17:00+08) but before the end (23:00+08)
+    # after the freeze moment (2026-10-13 22:00+08) but before the end
+    # (2026-10-14 23:00+08)
     now = dt.datetime(2026, 10, 14, 20, 0,
                       tzinfo=dt.timezone(dt.timedelta(hours=8)))
     data = translate("999", manual, [], [], None, now, meta=META)
     c = data.contest
     assert c["start_time"] == "2026-10-13T16:00:00+08:00"  # 08:00Z → +08:00
     assert c["duration"] == "31:00:00"                     # 111600 s
-    assert c["scoreboard_freeze_duration"] == "6:00:00"     # 21600 s
+    assert c["scoreboard_freeze_duration"] == "25:00:00"   # 90000 s
     assert data.state["started"] is not None
     assert data.state["ended"] is None
-    assert data.state["frozen"] == "2026-10-14T17:00:00+08:00"  # end − 6h
+    # end − 25h == start + 6h (hidingTime is minutes after contest start)
+    assert data.state["frozen"] == "2026-10-13T22:00:00+08:00"
 
 
 def test_meta_defaults_when_meta_empty():
     data = translate("999", {}, [], [], None, NOW, meta=None)
     assert data.contest["start_time"] is None
     assert data.contest["duration"] == "5:00:00"
+    assert data.contest["scoreboard_freeze_duration"] == "0:00:00"
+    assert data.contest["name"] == "contest"
+    assert data.contest["formal_name"] == "contest"
+    assert data.state["frozen"] is None
+
+
+def test_meta_name_fills_contest_names_when_manual_lacks_them():
+    """No manual name → problemSet.name from the API fills name and
+    formal_name (no more auto-generated "PTA <id>" placeholder)."""
+    manual = {"contest": {"start_time": "2026-10-13T16:00:00+08:00",
+                          "duration": "31:00:00", "pta_timezone": TZ}}
+    data = translate("999", manual, [], [], None, NOW, meta=META)
+    assert data.contest["name"] == "示例比赛"
+    assert data.contest["formal_name"] == "示例比赛"
+
+
+def test_manual_names_win_over_meta():
+    """Manual explicit name AND formal_name beat the API name."""
+    data = translate("999", MANUAL, [], [], None, NOW, meta=META)
+    assert data.contest["name"] == "省赛"
+    assert data.contest["formal_name"] == "省赛正式赛"
+
+
+def test_manual_name_only_leaves_formal_name_following_manual():
+    """formal_name falls through manual formal_name → manual name → meta
+    name — a manual name alone must not be overridden by the API name."""
+    manual = {"contest": {"name": "手动赛", "pta_timezone": TZ}}
+    data = translate("999", manual, [], [], None, NOW, meta=META)
+    assert data.contest["name"] == "手动赛"
+    assert data.contest["formal_name"] == "手动赛"
+
+
+def test_empty_manual_name_falls_through_to_meta():
+    """`or` semantics: manual "" must not mask the API name."""
+    manual = {"contest": {"name": "", "formal_name": "", "pta_timezone": TZ}}
+    data = translate("999", manual, [], [], None, NOW, meta=META)
+    assert data.contest["name"] == "示例比赛"
+    assert data.contest["formal_name"] == "示例比赛"
+
+
+def test_zero_meta_freeze_renders_zero_duration_and_never_frozen():
+    """Client edge cases (hideScoreboard false / hidingTime ≥ duration /
+    durationSeconds unknown) all collapse to scoreboardFreezeSeconds 0 →
+    translate renders "0:00:00" and state.frozen stays None."""
+    data = translate("999", {"contest": {"start_time": "2026-10-13T16:00:00+08:00",
+                                         "duration": "31:00:00", "pta_timezone": TZ}},
+                     [], [], None, NOW, meta=dict(META, scoreboardFreezeSeconds=0))
     assert data.contest["scoreboard_freeze_duration"] == "0:00:00"
     assert data.state["frozen"] is None
 

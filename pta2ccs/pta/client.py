@@ -170,28 +170,39 @@ class PtaClient:
     async def fetch_contest_meta(self) -> dict:
         """Contest metadata from GET /api/problem-sets/{id} (findings §5).
 
-        Freeze: problemSetConfig.hideScoreboard + hidingTime (minutes
-        before end; live-verified 2026-10-14: 360 → scoreboardFreezeSeconds
-        21600). Compilers are raw enums — translate maps them through
-        COMPILER_LANGUAGES. startAt/endAt stay in PTA's ISO-8601 UTC form;
-        translate attaches pta_timezone.
+        `name` is the raw problemSet.name — the contest-name source for
+        translate when manual/00-contest.json sets no explicit name.
+
+        Freeze: problemSetConfig.hideScoreboard + hidingTime (minutes AFTER
+        the contest STARTS — user-confirmed 2026-10-14, correcting the
+        earlier end-relative reading). The Contest API's
+        scoreboard_freeze_duration is measured from the END, so the
+        conversion subtracts: max(0, durationSeconds − hidingTime×60).
+        Live values: 111600 − 360×60 = 90000 (25:00:00; frozen at
+        start+6h). 0 when hideScoreboard is falsy, duration is unknown, or
+        hidingTime ≥ duration. Compilers are raw enums — translate maps
+        them through COMPILER_LANGUAGES. startAt/endAt stay in PTA's
+        ISO-8601 UTC form; translate attaches pta_timezone.
         """
         data = await self._get_json(self.contest_meta_url)
         ps = data.get("problemSet") or {}
         cfg = ps.get("problemSetConfig") or {}
-        freeze_minutes = 0
-        if cfg.get("hideScoreboard"):
+        duration = ps.get("duration")
+        duration_s = int(duration) if duration is not None else None
+        freeze_s = 0
+        if cfg.get("hideScoreboard") and duration_s is not None:
             try:
                 freeze_minutes = max(0, int(cfg.get("hidingTime") or 0))
+                freeze_s = max(0, duration_s - freeze_minutes * 60)
             except (TypeError, ValueError):
-                freeze_minutes = 0
-        duration = ps.get("duration")
+                freeze_s = 0
         return {
+            "name": ps.get("name"),
             "startAt": ps.get("startAt"),
             "endAt": ps.get("endAt"),
-            "durationSeconds": int(duration) if duration is not None else None,
+            "durationSeconds": duration_s,
             "compilers": [str(c) for c in (cfg.get("compilers") or [])],
-            "scoreboardFreezeSeconds": freeze_minutes * 60,
+            "scoreboardFreezeSeconds": freeze_s,
         }
 
     async def fetch_teams(self) -> list[dict]:

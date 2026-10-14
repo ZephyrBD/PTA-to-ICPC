@@ -61,9 +61,11 @@ def _meta_start_time(meta: dict, tz: str) -> str | None:
 def _build_contest(contest_id: str, manual_contest: dict | None,
                    meta: dict | None = None) -> dict:
     """manual explicit > contest meta (fetch_contest_meta) > built-in default
-    for start_time / duration / scoreboard_freeze_duration. `or` chains so an
-    empty manual string does not mask the meta value; a manual "0:00:00"
-    freeze is explicit and wins (freeze stays off until the file is edited).
+    for name / formal_name / start_time / duration / scoreboard_freeze_duration.
+    `or` chains so an empty manual string does not mask the meta value; a
+    manual "0:00:00" freeze is explicit and wins (freeze stays off until the
+    file is edited). The name falls through manual → meta (problemSet.name)
+    → "contest"; formal_name falls through manual → the resolved name.
     """
     mc = dict(manual_contest or {})
     meta = meta or {}
@@ -79,10 +81,11 @@ def _build_contest(contest_id: str, manual_contest: dict | None,
         f_seconds = meta.get("scoreboardFreezeSeconds")
         freeze = (to_reltime(dt.timedelta(seconds=int(f_seconds)))
                   if f_seconds is not None else "0:00:00")
+    name = mc.get("name") or meta.get("name") or "contest"
     return {
         "id": contest_id,
-        "name": mc.get("name", "contest"),
-        "formal_name": mc.get("formal_name", mc.get("name", "contest")),
+        "name": name,
+        "formal_name": mc.get("formal_name") or name,
         "start_time": start_time,
         "duration": duration,
         "scoreboard_freeze_duration": freeze,

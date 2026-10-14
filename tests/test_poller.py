@@ -20,11 +20,13 @@ class FakeClient:
             "organization_name": "DSA_2024",
         }]
         self.teams_calls = 0
-        # live-shaped meta: 6h freeze + two compilers; times None so the
-        # manual contest block keeps providing start/duration
+        # live-shaped meta: start-relative freeze (111600 − 360×60 = 90000
+        # = 25h) + contest name + two compilers; times None so the manual
+        # contest block keeps providing start/duration
         self.meta = {
+            "name": "示例比赛",
             "startAt": None, "endAt": None, "durationSeconds": None,
-            "compilers": ["GXX", "JAVAC"], "scoreboardFreezeSeconds": 21600,
+            "compilers": ["GXX", "JAVAC"], "scoreboardFreezeSeconds": 90000,
         }
         self.meta_calls = 0
 
@@ -136,14 +138,17 @@ def test_contest_meta_fetched_once_and_freeze_reaches_snapshot():
     asyncio.run(poller.poll_once())
     assert client.meta_calls == 1
     snap = store.snapshot()
-    # manual has no scoreboard_freeze_duration → meta's 6h freeze applies
-    assert snap.contest["scoreboard_freeze_duration"] == "6:00:00"
+    # manual has no scoreboard_freeze_duration → meta's 25h freeze applies
+    assert snap.contest["scoreboard_freeze_duration"] == "25:00:00"
     assert snap.state["frozen"] is not None
+    # manual has no name → problemSet.name from the API
+    assert snap.contest["name"] == "示例比赛"
+    assert snap.contest["formal_name"] == "示例比赛"
     names = {l["name"] for l in snap.languages.values()}
     assert {"C++ (g++)", "Java (javac)"} <= names  # meta compilers advertised
     for _ in range(2):  # non-config rounds
         asyncio.run(poller.poll_once())
     assert client.meta_calls == 1  # cached, not re-fetched
     snap = store.snapshot()
-    assert snap.contest["scoreboard_freeze_duration"] == "6:00:00"
+    assert snap.contest["scoreboard_freeze_duration"] == "25:00:00"
     assert snap.state["frozen"] is not None
