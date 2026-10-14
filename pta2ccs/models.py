@@ -34,7 +34,7 @@ ACCESS_ENDPOINTS = [
         "id", "name", "label", "group_id", "organization_id", "icpc_id"]},
     {"type": "problems", "properties": [
         "id", "label", "name", "ordinal", "color", "rgb",
-        "time_limit", "memory_limit", "code_limit"]},
+        "time_limit", "memory_limit", "code_limit", "test_data_count"]},
     {"type": "languages", "properties": ["id", "name"]},
     {"type": "judgement-types", "properties": ["id", "name", "penalty", "solved"]},
     {"type": "submissions", "properties": [
@@ -45,8 +45,9 @@ ACCESS_ENDPOINTS = [
         "start_time", "start_contest_time", "end_time", "end_contest_time",
         "max_run_time", "score"]},
     {"type": "runs", "properties": [
-        "id", "judgement_id", "submission_id", "team_id", "problem_id",
-        "run_time", "memory", "exit_code", "judge_time"]},
+        "id", "judgement_id", "ordinal", "judgement_type_id", "time",
+        "contest_time", "submission_id", "team_id", "problem_id", "run_time",
+        "memory", "exit_code", "judge_time"]},
     {"type": "scoreboard", "properties": ["time", "contest_time", "state", "rows"]},
     {"type": "event-feed", "properties": ["type", "id", "data", "token"]},
 ]

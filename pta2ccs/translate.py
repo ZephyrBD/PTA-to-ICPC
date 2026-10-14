@@ -173,6 +173,11 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
             entry.setdefault("memory_limit", p["memory_limit_kb"])
         if p.get("code_limit_kb") is not None:
             entry.setdefault("code_limit", p["code_limit_kb"])
+        # CCS problem.test_data_count (required integer) from the PTA cases
+        # count; skip when the raw problem has no cases (None) so manual
+        # entries are never overwritten by a null.
+        if p.get("test_data_count") is not None:
+            entry.setdefault("test_data_count", p["test_data_count"])
         data.problems[pid] = entry
 
     # enabled compilers from contest meta → advertised languages even with
@@ -283,17 +288,36 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
                     "filename": f"main{ext}",
                     "mime": "text/plain",
                 }]
+            # CCS runs carry exactly the 7 spec-required fields
+            # (id/judgement_id/ordinal/judgement_type_id/time/contest_time/
+            # run_time) plus our extras. Cases whose PTA result maps to no
+            # judgement type (SKIPPED/WAITING/JUDGING/NEUTRAL/OVERRIDDEN…)
+            # are omitted entirely — CDS rejects a run with a null
+            # judgement_type_id ("Invalid judgement type null").
+            ordinal = 0
             for r in row.get("run_results") or []:
+                jtype = PTA_STATUS_VERDICT_MAP.get(
+                    str(r.get("result")), (None, False, False))[0]
+                if jtype is None:
+                    continue
+                # ordinal: 1-based position among emitted runs, in case
+                # order — unique within the judgement, within
+                # 1..problem.test_data_count
+                ordinal += 1
                 case = str(r.get("case", ""))
                 rid = sanitize_id(f"{sid}-{case}")
                 mem = r.get("memory")
                 data.runs[rid] = {
                     "id": rid,
                     "judgement_id": sid,
+                    "ordinal": ordinal,
+                    "judgement_type_id": jtype,
+                    "time": to_iso_time(ts),
+                    "contest_time": contest_time,
+                    "run_time": r.get("time"),
                     "submission_id": sid,
                     "team_id": team_id,
                     "problem_id": problem_id,
-                    "run_time": r.get("time"),
                     # PTA reports bytes; the Contest API uses KB
                     "memory": (mem // 1024) if isinstance(mem, int) else None,
                     "exit_code": r.get("exitcode"),

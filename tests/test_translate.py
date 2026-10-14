@@ -409,6 +409,24 @@ def test_manual_problem_limits_win_over_raw():
     assert p["code_limit"] == 2
 
 
+def test_problem_test_data_count_from_raw():
+    raw = [dict(RAW_PROBLEMS[0], test_data_count=3)]
+    data = translate("999", MANUAL, [], raw, None, NOW)
+    assert data.problems["A"]["test_data_count"] == 3
+
+
+def test_problem_test_data_count_absent_when_raw_lacks_it():
+    data = t()  # RAW_PROBLEMS carry no test_data_count
+    assert "test_data_count" not in data.problems["A"]
+
+
+def test_manual_problem_test_data_count_wins_over_raw():
+    manual = dict(MANUAL, problems={"A": {"test_data_count": 9}})
+    raw = [dict(RAW_PROBLEMS[0], test_data_count=3)]
+    data = translate("999", manual, [], raw, None, NOW)
+    assert data.problems["A"]["test_data_count"] == 9
+
+
 # --- per-submission detail: runs / files / sources, task 13 ---------------
 
 def detail_row(sid: str = "801", *, program: str | None = "int main(){}",
@@ -432,16 +450,51 @@ def test_detail_row_adds_files_sources_and_runs():
         "href": "contests/999/submissions/801/files/main.cpp",
         "filename": "main.cpp", "mime": "text/plain"}]
     assert data.sources["801"] == "int main(){}"
+    # ACCEPTED case emitted; the SKIPPED "data00" case is omitted entirely
+    # (a null judgement_type_id is what CDS rejects as "Invalid judgement
+    # type null")
+    assert list(data.runs) == ["801-1"]
     r1 = data.runs["801-1"]
-    assert r1 == {"id": "801-1", "judgement_id": "801", "submission_id": "801",
-                  "team_id": "D22", "problem_id": "A", "run_time": 0.003,
-                  "memory": 584,  # 598016 bytes // 1024
-                  "exit_code": 0, "judge_time": "2023-05-21T09:10:00+08:00"}
-    r2 = data.runs["801-data00"]
-    assert set(r2) == set(r1)  # exactly these keys, no result/stdout
-    assert r2["run_time"] is None
-    assert r2["memory"] is None
-    assert r2["exit_code"] is None
+    assert r1 == {
+        "id": "801-1", "judgement_id": "801", "ordinal": 1,
+        "judgement_type_id": "AC", "time": "2023-05-21T09:10:00+08:00",
+        "contest_time": "0:10:00", "run_time": 0.003,
+        "submission_id": "801", "team_id": "D22", "problem_id": "A",
+        "memory": 584,  # 598016 bytes // 1024
+        "exit_code": 0, "judge_time": "2023-05-21T09:10:00+08:00"}
+
+
+def test_skipped_cases_never_emit_null_judgement_type():
+    # all cases map to None (SKIPPED/WAITING) → zero runs, not runs with
+    # judgement_type_id null
+    runs = [
+        {"case": "data00", "result": "SKIPPED", "time": None,
+         "memory": None, "exitcode": None},
+        {"case": "data01", "result": "WAITING", "time": None,
+         "memory": None, "exitcode": None},
+    ]
+    data = translate("999", MANUAL, [detail_row(runs=runs)],
+                     RAW_PROBLEMS, None, NOW)
+    assert data.runs == {}
+
+
+def test_run_judgement_type_and_ordinal_enumerate_emitted_cases():
+    runs = [
+        {"case": "1", "result": "ACCEPTED", "time": 0.003,
+         "memory": 1024, "exitcode": 0},
+        {"case": "data00", "result": "SKIPPED", "time": None,
+         "memory": None, "exitcode": None},
+        {"case": "2", "result": "WRONG_ANSWER", "time": 0.5,
+         "memory": 2048, "exitcode": 1},
+    ]
+    data = translate("999", MANUAL, [detail_row(runs=runs)],
+                     RAW_PROBLEMS, None, NOW)
+    assert set(data.runs) == {"801-1", "801-2"}
+    assert data.runs["801-1"]["judgement_type_id"] == "AC"
+    assert data.runs["801-1"]["ordinal"] == 1
+    assert data.runs["801-2"]["judgement_type_id"] == "WA"
+    assert data.runs["801-2"]["ordinal"] == 2
+    assert all(data.runs[k]["judgement_type_id"] for k in data.runs)
 
 
 def test_detail_row_file_extension_by_compiler():

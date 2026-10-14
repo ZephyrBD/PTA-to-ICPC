@@ -11,7 +11,8 @@
      "timeLimit": 1000,
      "memoryLimit": 128000,
      "codeSizeLimit": 64,
-     "stackSizeLimit": 1024
+     "stackSizeLimit": 1024,
+     "cases": [{"name": "1"}, {"name": "2"}, {"name": "3"}]
     }
    }
   },
@@ -25,7 +26,8 @@
      "timeLimit": 100,
      "memoryLimit": 65536,
      "codeSizeLimit": 32,
-     "stackSizeLimit": 1024
+     "stackSizeLimit": 1024,
+     "cases": [{"name": "1"}, {"name": "2"}]
     }
    }
   },

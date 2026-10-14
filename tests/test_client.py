@@ -213,6 +213,12 @@ def test_fetch_problems_from_list_endpoint_with_limits():
     assert problems[2]["time_limit_ms"] is None   # no problemConfig
     assert problems[2]["memory_limit_kb"] is None
     assert problems[2]["code_limit_kb"] is None
+    # test_data_count = len(programmingProblemConfig.cases); no config → None
+    assert problems[0]["test_data_count"] == \
+        len(rows[0]["problemConfig"]["programmingProblemConfig"]["cases"]) == 3
+    assert problems[1]["test_data_count"] == \
+        len(rows[1]["problemConfig"]["programmingProblemConfig"]["cases"]) == 2
+    assert problems[2]["test_data_count"] is None
     # dangerous fields must never appear in the normalized output
     dump = json.dumps(problems, ensure_ascii=False)
     for banned in ("content", "description", "solution", "judgeConfig",

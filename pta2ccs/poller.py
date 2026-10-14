@@ -193,7 +193,8 @@ class Poller:
                          # reltime string; translate expects ms)
                          "time_limit_ms": _rel_to_ms(p.get("time_limit")),
                          "memory_limit_kb": p.get("memory_limit"),
-                         "code_limit_kb": p.get("code_limit")}
+                         "code_limit_kb": p.get("code_limit"),
+                         "test_data_count": p.get("test_data_count")}
                         for p in snap.problems.values()
                     ]
             raw_teams = list(self._last_teams) if self._last_teams is not None else None

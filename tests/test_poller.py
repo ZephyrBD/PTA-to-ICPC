@@ -335,15 +335,18 @@ def test_non_config_rounds_keep_problem_limits():
     # through (time_limit round-trips reltime → ms).
     poller, client, store = make_poller(config_poll_seconds=60.0)
     client.problems = [{"id": "A", "title": "题A", "time_limit_ms": 100,
-                        "memory_limit_kb": 256000, "code_limit_kb": 64}]
+                        "memory_limit_kb": 256000, "code_limit_kb": 64,
+                        "test_data_count": 3}]
     asyncio.run(poller.poll_once())
     snap = store.snapshot()
     assert snap.problems["A"]["time_limit"] == "0:00:00.100"
     assert snap.problems["A"]["memory_limit"] == 256000
     assert snap.problems["A"]["code_limit"] == 64
+    assert snap.problems["A"]["test_data_count"] == 3
     for _ in range(2):  # non-config rounds rebuild from the snapshot
         asyncio.run(poller.poll_once())
     snap = store.snapshot()
     assert snap.problems["A"]["time_limit"] == "0:00:00.100"
     assert snap.problems["A"]["memory_limit"] == 256000
     assert snap.problems["A"]["code_limit"] == 64
+    assert snap.problems["A"]["test_data_count"] == 3

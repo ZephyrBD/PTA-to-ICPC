@@ -60,10 +60,12 @@ def test_access():
     by_type = {e["type"]: e["properties"] for e in body["endpoints"]}
     assert "files" in by_type["submissions"]
     assert {"max_run_time", "score"} <= set(by_type["judgements"])
-    assert {"time_limit", "memory_limit", "code_limit"} <= set(by_type["problems"])
-    assert by_type["runs"] == ["id", "judgement_id", "submission_id", "team_id",
-                               "problem_id", "run_time", "memory", "exit_code",
-                               "judge_time"]
+    assert {"time_limit", "memory_limit", "code_limit", "test_data_count"} <= \
+        set(by_type["problems"])
+    assert by_type["runs"] == [
+        "id", "judgement_id", "ordinal", "judgement_type_id", "time",
+        "contest_time", "submission_id", "team_id", "problem_id", "run_time",
+        "memory", "exit_code", "judge_time"]
 
 
 def test_collections_and_items():
@@ -96,6 +98,11 @@ def test_runs_collection_item_and_filter():
     assert runs[0]["run_time"] == 0.003
     assert runs[0]["memory"] == 2  # 2048 bytes → 2 KB
     assert runs[0]["exit_code"] == 0
+    # spec-required run fields present and non-null
+    assert runs[0]["judgement_type_id"] == "AC"
+    assert runs[0]["ordinal"] == 1
+    assert runs[0]["time"] == "2023-05-21T09:10:00+08:00"
+    assert runs[0]["contest_time"] == "0:10:00"
     r = c.get("/contests/c1/runs/1-1")
     assert r.status_code == 200
     assert r.json()["judgement_id"] == "1"

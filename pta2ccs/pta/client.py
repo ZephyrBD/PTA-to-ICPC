@@ -247,6 +247,7 @@ class PtaClient:
                 self._labels[raw_id] = str(label)
             cfg = ((p.get("problemConfig") or {})
                    .get("programmingProblemConfig") or {})
+            cases = cfg.get("cases")
             out.append({
                 "id": str(label) if label else raw_id,
                 "label": label,
@@ -255,6 +256,10 @@ class PtaClient:
                 "time_limit_ms": _to_int(cfg.get("timeLimit")),
                 "memory_limit_kb": _to_int(cfg.get("memoryLimit")),
                 "code_limit_kb": _to_int(cfg.get("codeSizeLimit")),
+                # CCS problem.test_data_count = number of test data sets.
+                # Only the LENGTH is emitted — the `cases` content (per-case
+                # hints / sample I/O) must never be stored or returned.
+                "test_data_count": len(cases) if isinstance(cases, list) else None,
             })
         return out
 
