@@ -14,11 +14,19 @@ class FakeClient:
         self.subs = []
         self.problems = [{"id": "A", "title": "题A"}]
         self.teams = [{
-            "id": ZERO_SUB_TEAM_ID, "name": "无提交队", "label": "无提交队",
+            "id": ZERO_SUB_TEAM_ID, "name": "无提交队",
+            "label": "2022000099",  # roster label = 学号 (task 11)
             "group_id": "1901545194649161728", "organization_id": "1901545194649161728",
             "organization_name": "DSA_2024",
         }]
         self.teams_calls = 0
+        # live-shaped meta: 6h freeze + two compilers; times None so the
+        # manual contest block keeps providing start/duration
+        self.meta = {
+            "startAt": None, "endAt": None, "durationSeconds": None,
+            "compilers": ["GXX", "JAVAC"], "scoreboardFreezeSeconds": 21600,
+        }
+        self.meta_calls = 0
 
     async def fetch_submissions(self):
         return list(self.subs)
@@ -29,6 +37,10 @@ class FakeClient:
     async def fetch_teams(self):
         self.teams_calls += 1
         return list(self.teams)
+
+    async def fetch_contest_meta(self):
+        self.meta_calls += 1
+        return dict(self.meta)
 
 
 def make_poller(config_poll_seconds: float = 0.01) -> tuple[Poller, FakeClient, Store]:
@@ -115,3 +127,23 @@ def test_empty_roster_on_config_round_keeps_previous_cache(caplog):
     assert snap.teams[ZERO_SUB_TEAM_ID]["name"] == "无提交队"
     assert snap.organizations["1901545194649161728"]["name"] == "DSA_2024"
     assert any("empty roster" in rec.message for rec in caplog.records)
+
+
+def test_contest_meta_fetched_once_and_freeze_reaches_snapshot():
+    # config_poll_seconds=60 → only the first round is need_config; meta
+    # (like the roster) is fetched there and cached for later rounds.
+    poller, client, store = make_poller(config_poll_seconds=60.0)
+    asyncio.run(poller.poll_once())
+    assert client.meta_calls == 1
+    snap = store.snapshot()
+    # manual has no scoreboard_freeze_duration → meta's 6h freeze applies
+    assert snap.contest["scoreboard_freeze_duration"] == "6:00:00"
+    assert snap.state["frozen"] is not None
+    names = {l["name"] for l in snap.languages.values()}
+    assert {"C++ (g++)", "Java (javac)"} <= names  # meta compilers advertised
+    for _ in range(2):  # non-config rounds
+        asyncio.run(poller.poll_once())
+    assert client.meta_calls == 1  # cached, not re-fetched
+    snap = store.snapshot()
+    assert snap.contest["scoreboard_freeze_duration"] == "6:00:00"
+    assert snap.state["frozen"] is not None

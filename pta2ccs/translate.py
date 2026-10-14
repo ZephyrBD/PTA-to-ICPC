@@ -5,8 +5,9 @@ import logging
 from dataclasses import dataclass, field
 
 from .models import sanitize_id
+from .pta.client import COMPILER_LANGUAGES
 from .pta.verdicts import PTA_STATUS_VERDICT_MAP, PTA_VERDICT_MAP
-from .timefmt import parse_pta_time, parse_reltime, to_iso_time, to_reltime
+from .timefmt import parse_offset, parse_pta_time, parse_reltime, to_iso_time, to_reltime
 
 log = logging.getLogger(__name__)
 
@@ -44,15 +45,47 @@ class ContestData:
     judgements: dict[str, dict] = field(default_factory=dict)
 
 
-def _build_contest(contest_id: str, manual_contest: dict | None) -> dict:
+def _meta_start_time(meta: dict, tz: str) -> str | None:
+    """meta.startAt (ISO-8601 UTC `...Z`, or naive → UTC) → CCS start_time
+    in the contest's pta_timezone (same wall-clock form parse_pta_time
+    expects before it re-attaches the offset)."""
+    raw = meta.get("startAt")
+    if not raw:
+        return None
+    when = dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    return to_iso_time(when.astimezone(parse_offset(tz)))
+
+
+def _build_contest(contest_id: str, manual_contest: dict | None,
+                   meta: dict | None = None) -> dict:
+    """manual explicit > contest meta (fetch_contest_meta) > built-in default
+    for start_time / duration / scoreboard_freeze_duration. `or` chains so an
+    empty manual string does not mask the meta value; a manual "0:00:00"
+    freeze is explicit and wins (freeze stays off until the file is edited).
+    """
     mc = dict(manual_contest or {})
+    meta = meta or {}
+    tz = mc.get("pta_timezone", "+08:00")
+    start_time = mc.get("start_time") or _meta_start_time(meta, tz)
+    duration = mc.get("duration")
+    if not duration:
+        seconds = meta.get("durationSeconds")
+        duration = (to_reltime(dt.timedelta(seconds=int(seconds)))
+                    if seconds is not None else "5:00:00")
+    freeze = mc.get("scoreboard_freeze_duration")
+    if not freeze:
+        f_seconds = meta.get("scoreboardFreezeSeconds")
+        freeze = (to_reltime(dt.timedelta(seconds=int(f_seconds)))
+                  if f_seconds is not None else "0:00:00")
     return {
         "id": contest_id,
         "name": mc.get("name", "contest"),
         "formal_name": mc.get("formal_name", mc.get("name", "contest")),
-        "start_time": mc.get("start_time"),
-        "duration": mc.get("duration", "5:00:00"),
-        "scoreboard_freeze_duration": mc.get("scoreboard_freeze_duration", "0:00:00"),
+        "start_time": start_time,
+        "duration": duration,
+        "scoreboard_freeze_duration": freeze,
         "scoreboard_type": "pass-fail",
         "penalty_time": mc.get("penalty_time", "0:20:00"),
     }
@@ -78,11 +111,11 @@ def _build_state(contest: dict, now: dt.datetime) -> dict:
 
 def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
               raw_problems: list[dict], raw_teams: list[dict] | None,
-              now: dt.datetime) -> ContestData:
+              now: dt.datetime, meta: dict | None = None) -> ContestData:
     data = ContestData()
     mc = manual.get("contest") or {}
     tz = mc.get("pta_timezone", "+08:00")
-    data.contest = _build_contest(contest_id, mc)
+    data.contest = _build_contest(contest_id, mc, meta)
     data.state = _build_state(data.contest, now)
 
     for key in ("groups", "organizations", "teams", "problems", "languages"):
@@ -109,6 +142,14 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
             "rgb": p.get("rgb", entry.get("rgb", rgb)),
         })
         data.problems[pid] = entry
+
+    # enabled compilers from contest meta → advertised languages even with
+    # zero submissions; manual entries (above) and observed submissions
+    # (below) still win via setdefault semantics.
+    for enum in (meta or {}).get("compilers") or []:
+        name = COMPILER_LANGUAGES.get(enum, enum)
+        lid = sanitize_id(name)
+        data.languages.setdefault(lid, {"id": lid, "name": name})
 
     for lang in dict.fromkeys(str(s.get("language", "unknown")) for s in raw_submissions):
         lid = sanitize_id(lang)

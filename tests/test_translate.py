@@ -1,6 +1,7 @@
 import datetime as dt
 import logging
 
+from pta2ccs.models import sanitize_id
 from pta2ccs.translate import translate
 
 TZ = "+08:00"
@@ -39,16 +40,25 @@ RAW_SUBMISSIONS = [
 ]
 
 ROSTER = [
-    {"id": "1901545194649161728", "name": "张三", "label": "张三",
+    {"id": "1901545194649161728", "name": "张三", "label": "2022000001",
      "group_id": "1901545194649161728", "organization_id": "1901545194649161728",
      "organization_name": "DSA_2024"},
-    {"id": "2032742953069465601", "name": "李四", "label": "李四",
+    {"id": "2032742953069465601", "name": "李四", "label": "2022000002",
      "group_id": "2032742953069465600", "organization_id": "2032742953069465600",
      "organization_name": "DSA_2025"},
-    {"id": "2032742953069465602", "name": "王五", "label": "王五",
+    {"id": "2032742953069465602", "name": "王五", "label": "2022000003",
      "group_id": "2032742953069465600", "organization_id": "2032742953069465600",
      "organization_name": "DSA_2025"},
 ]
+
+# fetch_contest_meta() shape (live 2026-10-14: hidingTime 360 → 6h freeze)
+META = {
+    "startAt": "2026-10-13T08:00:00Z",
+    "endAt": "2026-10-14T15:00:00Z",
+    "durationSeconds": 111600,
+    "compilers": ["GXX", "JAVAC", "CANGJIE"],
+    "scoreboardFreezeSeconds": 21600,
+}
 
 
 def t() -> "object":
@@ -85,7 +95,8 @@ def test_roster_teams_organizations_and_zero_submission_survival():
     assert {"1901545194649161728", "2032742953069465601",
             "2032742953069465602"} <= set(data.teams)
     zhang = data.teams["1901545194649161728"]
-    assert zhang["name"] == zhang["label"] == "张三"
+    assert zhang["name"] == "张三"
+    assert zhang["label"] == "2022000001"  # roster label = 学号
     assert zhang["group_id"] == "1901545194649161728"
     assert zhang["organization_id"] == "1901545194649161728"
     assert "2032742953069465602" not in {
@@ -103,9 +114,9 @@ def test_roster_teams_organizations_and_zero_submission_survival():
 
 def test_roster_sanitizes_group_ids_and_null_missing():
     roster = [
-        {"id": "t1", "name": "甲", "label": "甲", "group_id": "G 1",
+        {"id": "t1", "name": "甲", "label": "2022000011", "group_id": "G 1",
          "organization_id": "G 1", "organization_name": "机房 1"},
-        {"id": "t2", "name": "乙", "label": "乙", "group_id": None,
+        {"id": "t2", "name": "乙", "label": "2022000012", "group_id": None,
          "organization_id": None, "organization_name": None},
     ]
     data = translate("999", MANUAL, [], RAW_PROBLEMS, roster, NOW)
@@ -123,14 +134,15 @@ def test_roster_sanitizes_group_ids_and_null_missing():
 
 
 def test_roster_name_not_overwritten_by_submission_backfill():
-    roster = [{"id": "D22", "name": "真名", "label": "真名", "group_id": "G1",
+    roster = [{"id": "D22", "name": "真名", "label": "2022000009",
+               "group_id": "G1",
                "organization_id": "G1", "organization_name": "DSA_2024"}]
     rows = [{"id": "501", "submit_time": "2023/05/21 09:10:00",
              "status": "答案正确", "team_id": "D22", "team_name": "垃圾名",
              "problem_index": "A", "language": "cpp"}]
     data = translate("999", MANUAL, rows, RAW_PROBLEMS, roster, NOW)
     assert data.teams["D22"]["name"] == "真名"
-    assert data.teams["D22"]["label"] == "真名"
+    assert data.teams["D22"]["label"] == "2022000009"  # roster label survives
     assert data.submissions["501"]["team_id"] == "D22"
 
 
@@ -228,3 +240,69 @@ def test_missing_team_id_log_does_not_leak_team_name(caplog):
         translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
     assert "301" in caplog.text
     assert "缺team_id-secret" not in caplog.text
+
+
+# --- contest meta (freeze / compilers / times), task 11 -------------------
+
+def test_meta_fills_contest_fields_when_manual_absent():
+    """manual explicit > meta > built-in default: with no manual values the
+    meta startAt/duration/freeze win (live shape: 31h contest, 6h freeze)."""
+    manual = {"contest": {"name": "meta赛", "pta_timezone": TZ}}
+    # after the freeze moment (17:00+08) but before the end (23:00+08)
+    now = dt.datetime(2026, 10, 14, 20, 0,
+                      tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    data = translate("999", manual, [], [], None, now, meta=META)
+    c = data.contest
+    assert c["start_time"] == "2026-10-13T16:00:00+08:00"  # 08:00Z → +08:00
+    assert c["duration"] == "31:00:00"                     # 111600 s
+    assert c["scoreboard_freeze_duration"] == "6:00:00"     # 21600 s
+    assert data.state["started"] is not None
+    assert data.state["ended"] is None
+    assert data.state["frozen"] == "2026-10-14T17:00:00+08:00"  # end − 6h
+
+
+def test_meta_defaults_when_meta_empty():
+    data = translate("999", {}, [], [], None, NOW, meta=None)
+    assert data.contest["start_time"] is None
+    assert data.contest["duration"] == "5:00:00"
+    assert data.contest["scoreboard_freeze_duration"] == "0:00:00"
+    assert data.state["frozen"] is None
+
+
+def test_manual_contest_fields_win_over_meta():
+    """MANUAL pins start_time, duration and freeze "0:00:00" explicitly —
+    the meta freeze must NOT override it (precedence semantics; the real
+    deployment keeps freeze off until manual/00-contest.json drops the key)."""
+    data = translate("999", MANUAL, [], [], None, NOW, meta=META)
+    c = data.contest
+    assert c["start_time"] == "2023-05-21T09:00:00+08:00"
+    assert c["duration"] == "5:00:00"
+    assert c["scoreboard_freeze_duration"] == "0:00:00"
+    assert data.state["frozen"] is None  # freeze 0 → never frozen
+
+
+def test_meta_compilers_seed_languages_with_zero_submissions():
+    manual = dict(MANUAL, languages={"cpp": {"name": "C++"}})
+    data = translate("999", manual, [], [], None, NOW, meta=META)
+    by_name = {l["name"] for l in data.languages.values()}
+    assert data.languages["cpp"]["name"] == "C++"          # manual entry
+    assert {"C++ (g++)", "Java (javac)", "仓颉 (cjc)"} <= by_name  # meta
+
+
+def test_submissions_still_add_language_not_in_meta():
+    rows = [{"id": "701", "submit_time": "2023/05/21 09:10:00",
+             "status": "答案正确", "team_id": "D22", "team_name": "鸡你太美队",
+             "problem_index": "A", "language": "Fortran95 (gfortran)"}]
+    data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW, meta=META)
+    by_name = {l["name"] for l in data.languages.values()}
+    assert "Fortran95 (gfortran)" in by_name  # observed, not in meta compilers
+    assert "C++ (g++)" in by_name              # meta still seeded
+    assert data.submissions["701"]["language_id"] == \
+        sanitize_id("Fortran95 (gfortran)")
+
+
+def test_manual_language_entry_wins_over_meta():
+    lid = sanitize_id("C++ (g++)")  # the id meta would seed for GXX
+    manual = dict(MANUAL, languages={lid: {"name": "Manual C++"}})
+    data = translate("999", manual, [], [], None, NOW, meta=META)
+    assert data.languages[lid]["name"] == "Manual C++"

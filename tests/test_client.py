@@ -8,7 +8,11 @@ import httpx
 import pytest
 
 from pta2ccs.models import sanitize_id
-from pta2ccs.pta.client import PtaAuthError, PtaClient
+from pta2ccs.pta.client import (
+    COMPILER_LANGUAGES,
+    PtaAuthError,
+    PtaClient,
+)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "pta"
 MEMBERS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "members.json"
@@ -52,6 +56,10 @@ def fetch_problems(client: PtaClient) -> list[dict]:
 
 def fetch_teams(client: PtaClient) -> list[dict]:
     return asyncio.run(_run(client, client.fetch_teams()))
+
+
+def fetch_contest_meta(client: PtaClient) -> dict:
+    return asyncio.run(_run(client, client.fetch_contest_meta()))
 
 
 def expected_team(payload: dict, row: dict) -> tuple[str, str]:
@@ -180,6 +188,80 @@ def test_fetch_problems_from_labels_endpoint():
         range(1, len(payload["labels"]) + 1))
 
 
+def test_fetch_contest_meta():
+    """GET /api/problem-sets/{id} → freeze/compilers/times (findings §5,
+    live-verified 2026-10-14: hidingTime 360 min → 21600 s = 6h freeze)."""
+    payload = load("contest_meta.json")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/api/problem-sets/{CONTEST_ID}"
+        return httpx.Response(200, json=payload)
+
+    meta = fetch_contest_meta(make_client(handle))
+    ps = payload["problemSet"]
+    assert meta["startAt"] == ps["startAt"] == "2026-10-13T08:00:00Z"
+    assert meta["endAt"] == ps["endAt"] == "2026-10-14T15:00:00Z"
+    assert meta["durationSeconds"] == 111600
+    assert isinstance(meta["durationSeconds"], int)
+    assert meta["scoreboardFreezeSeconds"] == 360 * 60 == 21600
+    assert meta["compilers"] == ps["problemSetConfig"]["compilers"]
+    assert all(isinstance(c, str) for c in meta["compilers"])
+
+
+def test_fetch_contest_meta_scoreboard_not_hidden():
+    """hideScoreboard false → freeze 0 even with a stale hidingTime."""
+    payload = load("contest_meta.json")
+    cfg = payload["problemSet"]["problemSetConfig"]
+    cfg["hideScoreboard"] = False
+    cfg["hidingTime"] = 120  # must be ignored while hiding is off
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    meta = fetch_contest_meta(make_client(handle))
+    assert meta["scoreboardFreezeSeconds"] == 0
+
+
+def test_fetch_contest_meta_absent_duration_and_config():
+    """Defensive shape: missing duration/problemSetConfig → Nones/empties."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"problemSet": {"id": "x"}})
+
+    meta = fetch_contest_meta(make_client(handle))
+    assert meta == {
+        "startAt": None, "endAt": None, "durationSeconds": None,
+        "compilers": [], "scoreboardFreezeSeconds": 0,
+    }
+
+
+# The 38 enums the API returns for the live 2026 contest, in API order
+# (same order as the PTA web UI compiler list).
+LIVE_COMPILER_ENUMS = [
+    "GCC", "MODERN_GCC", "GXX", "CLANG", "CLANGXX", "JAVAC", "PYTHON2",
+    "PYTHON3", "RUBY", "BASH", "CAT", "CLISP", "FPC", "GO", "GHC", "LUA",
+    "LUAJIT", "MCS", "NODE", "OCAMLC", "PHP", "PERL", "AWK", "DMD", "RKT",
+    "VALAC", "VBNC", "KOTLIN", "SWIFT", "OBJC", "FORTRAN", "OCTAVE",
+    "RLANG", "ASM", "RUST", "SCALA", "PYPY3", "CANGJIE",
+]
+
+
+def test_compilers_table_covers_all_api_enums():
+    assert len(LIVE_COMPILER_ENUMS) == 38
+    missing = [e for e in LIVE_COMPILER_ENUMS if e not in COMPILER_LANGUAGES]
+    assert missing == []
+    # fixture, table and the live API agree on the enabled set
+    fixture = load("contest_meta.json")
+    assert fixture["problemSet"]["problemSetConfig"]["compilers"] == \
+        LIVE_COMPILER_ENUMS
+    # exact UI display strings (live-verified)
+    assert COMPILER_LANGUAGES["CANGJIE"] == "仓颉 (cjc)"
+    assert COMPILER_LANGUAGES["MODERN_GCC"] == "C (gcc c11)"
+    assert COMPILER_LANGUAGES["GXX"] == "C++ (g++)"
+    assert COMPILER_LANGUAGES["JAVAC"] == "Java (javac)"
+    assert COMPILER_LANGUAGES["PYPY3"] == "Python (pypy3)"
+
+
 def test_fetch_teams_merges_pages():
     """Members use page/limit pagination (NOT the submissions cursor):
     loop while a page returns exactly `limit` rows, then stop."""
@@ -219,15 +301,21 @@ def test_fetch_teams_normalizes_roster():
         stu = payload["studentUserById"][sid]
         gid = m["userGroupId"]
         team = by_id[sanitize_id(sid)]
-        # id = studentUserId, name = label = 姓名, group = org = raw group id
+        # id = studentUserId, name = 姓名, label = 学号 (user decision
+        # 2026-10-14), group = org = raw group id
         assert team["name"] == stu["name"]
-        assert team["label"] == stu["name"]
+        assert team["label"] == stu["studentNumber"]
         assert team["group_id"] == gid
         assert team["organization_id"] == gid
         assert team["organization_name"] == payload["userGroups"][gid]["name"]
-    dump = json.dumps(teams, ensure_ascii=False)
-    for stu in payload["studentUserById"].values():
-        assert stu["studentNumber"] not in dump
+    # student numbers are emitted ONLY as label values — never in id/name
+    # (or any other field of the team row)
+    numbers = {stu["studentNumber"] for stu in payload["studentUserById"].values()}
+    assert numbers <= {t["label"] for t in teams}  # every number is a label
+    for t in teams:
+        for key, value in t.items():
+            if key != "label":
+                assert not any(sn in str(value) for sn in numbers)
     org_names = {t["organization_name"] for t in teams}
     assert org_names == {g["name"] for g in payload["userGroups"].values()}
 

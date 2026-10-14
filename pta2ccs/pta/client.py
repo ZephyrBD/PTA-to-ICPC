@@ -10,11 +10,48 @@ from ..timefmt import parse_offset
 
 log = logging.getLogger(__name__)
 
-# Findings §"Recommended normalization": compiler enum → UI language string.
+# Findings §"Recommended normalization": compiler enum → UI language string
+# (网页设置页显示名; live-verified 2026-10-14 against all 38 enabled
+# compilers). MODERN_GCC is "C (gcc c11)", not a C++ variant.
 COMPILER_LANGUAGES: dict[str, str] = {
+    "GCC": "C (gcc)",
+    "MODERN_GCC": "C (gcc c11)",
     "GXX": "C++ (g++)",
-    "JAVAC": "Java",
-    "PYPY3": "PyPy3",
+    "CLANG": "C (clang)",
+    "CLANGXX": "C++ (clang++)",
+    "JAVAC": "Java (javac)",
+    "PYTHON2": "Python (python2)",
+    "PYTHON3": "Python (python3)",
+    "RUBY": "Ruby (ruby)",
+    "BASH": "Bash (bash)",
+    "CAT": "Plaintext (cat)",
+    "CLISP": "Common Lisp (sbcl)",
+    "FPC": "Pascal (fpc)",
+    "GO": "Go (go)",
+    "GHC": "Haskell (ghc)",
+    "LUA": "Lua (lua)",
+    "LUAJIT": "Lua (luajit)",
+    "MCS": "C# (dotnet)",
+    "NODE": "JavaScript (node)",
+    "OCAMLC": "OCaml (ocamlc)",
+    "PHP": "PHP (php)",
+    "PERL": "Perl (perl)",
+    "AWK": "AWK (awk)",
+    "DMD": "D (dmd)",
+    "RKT": "Racket (racket)",
+    "VALAC": "Vala (valac)",
+    "VBNC": "Visual Basic (dotnet)",
+    "KOTLIN": "Kotlin (kotlinc)",
+    "SWIFT": "Swift (swiftc)",
+    "OBJC": "Objective-C (clang)",
+    "FORTRAN": "Fortran95 (gfortran)",
+    "OCTAVE": "Octave (octave-cli)",
+    "RLANG": "R (R)",
+    "ASM": "ASM (nasm.sh)",
+    "RUST": "Rust (rustc)",
+    "SCALA": "Scala (scalac)",
+    "PYPY3": "Python (pypy3)",
+    "CANGJIE": "仓颉 (cjc)",
 }
 
 # Findings §4: the /members endpoint needs this filter (percent-encoded by
@@ -51,6 +88,8 @@ class PtaClient:
             f"{base_url}/api/problem-sets/{contest_id}/problem-types")
         self.members_url = (
             f"{base_url}/api/problem-sets/{contest_id}/members")
+        self.contest_meta_url = (
+            f"{base_url}/api/problem-sets/{contest_id}")
         self._tz = tz
         self._page_limit = page_limit
         # problemSetProblemId → label; refreshed by fetch_problems and by
@@ -128,6 +167,33 @@ class PtaClient:
             })
         return out
 
+    async def fetch_contest_meta(self) -> dict:
+        """Contest metadata from GET /api/problem-sets/{id} (findings §5).
+
+        Freeze: problemSetConfig.hideScoreboard + hidingTime (minutes
+        before end; live-verified 2026-10-14: 360 → scoreboardFreezeSeconds
+        21600). Compilers are raw enums — translate maps them through
+        COMPILER_LANGUAGES. startAt/endAt stay in PTA's ISO-8601 UTC form;
+        translate attaches pta_timezone.
+        """
+        data = await self._get_json(self.contest_meta_url)
+        ps = data.get("problemSet") or {}
+        cfg = ps.get("problemSetConfig") or {}
+        freeze_minutes = 0
+        if cfg.get("hideScoreboard"):
+            try:
+                freeze_minutes = max(0, int(cfg.get("hidingTime") or 0))
+            except (TypeError, ValueError):
+                freeze_minutes = 0
+        duration = ps.get("duration")
+        return {
+            "startAt": ps.get("startAt"),
+            "endAt": ps.get("endAt"),
+            "durationSeconds": int(duration) if duration is not None else None,
+            "compilers": [str(c) for c in (cfg.get("compilers") or [])],
+            "scoreboardFreezeSeconds": freeze_minutes * 60,
+        }
+
     async def fetch_teams(self) -> list[dict]:
         """Full roster from the /members endpoint (findings §4).
 
@@ -135,10 +201,10 @@ class PtaClient:
         cursor): loop while a page returns exactly `limit` rows, with a
         sane page-count guard; warn when `total` says rows were missed.
         Every member becomes a team — id = studentUserId (sanitized;
-        digits pass through), name = label = 姓名, group_id =
-        organization_id = sanitized userGroupId (None when the member
-        has none). Student numbers are resolved to names but NEVER
-        appear in the output.
+        digits pass through), name = 姓名, label = 学号 (falls back to
+        姓名 when the student number is missing; user decision 2026-10-14),
+        group_id = organization_id = sanitized userGroupId (None when the
+        member has none).
         """
         members: list[dict] = []
         groups: dict[str, str] = {}
@@ -175,8 +241,9 @@ class PtaClient:
                 continue
             team_id = sanitize_id(str(raw_team_id))
             name = str(stu.get("name") or nick.get("nickname") or "")
+            label = str(stu.get("studentNumber") or name)
             out.setdefault(team_id, {
-                "id": team_id, "name": name, "label": name,
+                "id": team_id, "name": name, "label": label,
                 "group_id": gid, "organization_id": gid,
                 "organization_name": groups.get(gid, gid) if gid else None,
             })
@@ -206,9 +273,8 @@ class PtaClient:
         Chain: userId → examMemberByUserId[userId].studentUserId →
         studentUserById[...].name (team id = studentUserId, matching
         fetch_teams' roster). When any link is broken, fall back to
-        sanitize_id(userId) + userById nickname. Student numbers are
-        never part of the identity — they must not leak into any API
-        output.
+        sanitize_id(userId) + userById nickname. Team identity (id/name)
+        never includes the student number — only roster labels do.
         """
         uid = row.get("userId")
         member = (data.get("examMemberByUserId") or {}).get(uid) or {}

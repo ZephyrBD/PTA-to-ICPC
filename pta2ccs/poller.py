@@ -33,6 +33,9 @@ class Poller:
         # non-config round so zero-submission teams don't vanish (and
         # re-create/delete in event storms) between config refreshes.
         self._last_teams: list[dict] | None = None
+        # last successful contest meta (freeze/compilers/times); same
+        # caching pattern as the roster — fetched on config rounds only.
+        self._last_meta: dict | None = None
 
     async def poll_once(self) -> None:
         try:
@@ -55,6 +58,9 @@ class Poller:
                     # teams until the next config round: keep last roster
                     log.warning("empty roster from /members; keeping "
                                 "previous %d teams", len(self._last_teams))
+                fetched_meta = await self.client.fetch_contest_meta()
+                if fetched_meta or not self._last_meta:
+                    self._last_meta = fetched_meta
                 self._last_config_poll = _now()
             else:
                 snap = self.store.snapshot()
@@ -67,7 +73,8 @@ class Poller:
                     ]
             raw_teams = list(self._last_teams) if self._last_teams is not None else None
             data = translate(self.settings.contest_id, self.manual,
-                             raw_subs, raw_problems, raw_teams, _now())
+                             raw_subs, raw_problems, raw_teams, _now(),
+                             meta=self._last_meta)
             self.store.apply_all(data)
             self.status["ready"] = True
             self.status["cookie_ok"] = True
