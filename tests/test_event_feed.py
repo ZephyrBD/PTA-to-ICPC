@@ -18,7 +18,7 @@ MANUAL = {"contest": {"start_time": "2023-05-21T09:00:00+08:00",
 
 def sub(sid: str) -> dict:
     return {"id": sid, "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
-            "user": "D22 队", "problem_index": "A", "language": "cpp"}
+            "team_id": "D22", "team_name": "队", "problem_index": "A", "language": "cpp"}
 
 
 def make(store: Store) -> TestClient:

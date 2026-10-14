@@ -5,6 +5,7 @@ import logging
 
 import httpx
 
+from ..models import sanitize_id
 from ..timefmt import parse_offset
 
 log = logging.getLogger(__name__)
@@ -16,6 +17,15 @@ COMPILER_LANGUAGES: dict[str, str] = {
     "PYPY3": "PyPy3",
 }
 
+# Findings §4: the /members endpoint needs this filter (percent-encoded by
+# httpx — Tomcat rejects raw {}). Pagination is page/limit, NOT the
+# before/hasBefore cursor used by /submissions.
+MEMBERS_FILTER = (
+    '{"studentUserFilter":{"keyword":"","unbindOnly":false,'
+    '"field":"STUDENT_NUMBER"}}'
+)
+MAX_MEMBERS_PAGES = 50
+
 
 class PtaAuthError(Exception):
     pass
@@ -26,8 +36,9 @@ class PtaClient:
 
     Deviations from the brief skeleton are documented in
     .superpowers/sdd/task-6-report.md: real /api endpoints, cursor
-    pagination (after/before/hasBefore; total is always 0), row
-    normalization, and optional tz/transport kwargs.
+    pagination for submissions (after/before/hasBefore; total is always 0),
+    page/limit pagination for the /members roster, row normalization, and
+    optional tz/transport kwargs.
     """
 
     def __init__(self, base_url: str, contest_id: str, cookie: str, *,
@@ -38,6 +49,8 @@ class PtaClient:
             f"{base_url}/api/problem-sets/{contest_id}/submissions")
         self.problems_url = (
             f"{base_url}/api/problem-sets/{contest_id}/problem-types")
+        self.members_url = (
+            f"{base_url}/api/problem-sets/{contest_id}/members")
         self._tz = tz
         self._page_limit = page_limit
         # problemSetProblemId → label; refreshed by fetch_problems and by
@@ -115,11 +128,48 @@ class PtaClient:
             })
         return out
 
-    async def fetch_teams(self) -> list[dict] | None:
-        # No standalone team endpoint: names are embedded in every
-        # submissions response (userById/studentUserById maps) and
-        # reverse-derived in translate.py — see findings §4.
-        return None
+    async def fetch_teams(self) -> list[dict]:
+        """Full roster from the /members endpoint (findings §4).
+
+        Page/limit pagination with a real `total` (NOT the submissions
+        cursor): loop while a page returns exactly `limit` rows, with a
+        sane page-count guard. Every member becomes a team — id =
+        studentUserId (sanitized; digits pass through), name = label =
+        姓名, group_id = organization_id = raw userGroupId (long numeric
+        string). Student numbers are resolved to names but NEVER appear
+        in the output.
+        """
+        members: list[dict] = []
+        groups: dict[str, str] = {}
+        students: dict[str, dict] = {}
+        users: dict[str, dict] = {}
+        for page in range(MAX_MEMBERS_PAGES):
+            params = {"page": page, "limit": self._page_limit,
+                      "filter": MEMBERS_FILTER}
+            data = await self._get_json(self.members_url, params)
+            groups.update({str(gid): str((g or {}).get("name") or gid)
+                           for gid, g in (data.get("userGroups") or {}).items()})
+            students.update(data.get("studentUserById") or {})
+            users.update(data.get("userById") or {})
+            rows = data.get("members") or []
+            members.extend(rows)
+            if len(rows) < self._page_limit:
+                break
+        out: dict[str, dict] = {}
+        for m in members:
+            uid = m.get("userId")
+            sid = m.get("studentUserId")
+            stu = students.get(sid) or {}
+            nick = users.get(uid) or {}
+            gid = str(m.get("userGroupId") or "")
+            team_id = sanitize_id(str(sid or uid or m.get("id")))
+            name = str(stu.get("name") or nick.get("nickname") or "")
+            out.setdefault(team_id, {
+                "id": team_id, "name": name, "label": name,
+                "group_id": gid, "organization_id": gid,
+                "organization_name": groups.get(gid, gid),
+            })
+        return list(out.values())
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -139,15 +189,26 @@ class PtaClient:
             when = when.replace(tzinfo=dt.timezone.utc)
         return when.astimezone(parse_offset(self._tz)).strftime("%Y/%m/%d %H:%M:%S")
 
-    def _resolve_user(self, row: dict, data: dict) -> str:
+    def _resolve_team(self, row: dict, data: dict) -> tuple[str, str]:
+        """(team_id, team_name) for a submission row.
+
+        Chain: userId → examMemberByUserId[userId].studentUserId →
+        studentUserById[...].name (team id = studentUserId, matching
+        fetch_teams' roster). When any link is broken, fall back to
+        sanitize_id(userId) + userById nickname. Student numbers are
+        never part of the identity — they must not leak into any API
+        output.
+        """
         uid = row.get("userId")
         member = (data.get("examMemberByUserId") or {}).get(uid) or {}
-        stu = (data.get("studentUserById") or {}).get(
-            member.get("studentUserId")) or {}
-        if stu.get("studentNumber") and stu.get("name"):
-            return f"{stu['studentNumber']} {stu['name']}"
-        nickname = (data.get("userById") or {}).get(uid) or {}
-        return str(nickname.get("nickname") or "")
+        sid = member.get("studentUserId")
+        nick = str(((data.get("userById") or {}).get(uid) or {})
+                   .get("nickname") or "")
+        if sid:
+            name = str(((data.get("studentUserById") or {}).get(sid) or {})
+                       .get("name") or nick)
+            return sanitize_id(str(sid)), name
+        return sanitize_id(str(uid)) if uid not in (None, "") else "", nick
 
     def _resolve_problem_index(self, row: dict, data: dict) -> str:
         pid = row.get("problemSetProblemId")
@@ -161,11 +222,13 @@ class PtaClient:
 
     def _normalize(self, row: dict, data: dict) -> dict:
         compiler = row.get("language") or row.get("compiler")
+        team_id, team_name = self._resolve_team(row, data)
         return {
             "id": str(row["id"]),
             "submit_time": self._fmt_submit_time(row.get("submitAt")),
             "status": row.get("status"),  # raw enum; translate maps it
-            "user": self._resolve_user(row, data),
+            "team_id": team_id,
+            "team_name": team_name,
             "problem_index": self._resolve_problem_index(row, data),
             "language": COMPILER_LANGUAGES.get(compiler, compiler or "unknown"),
         }

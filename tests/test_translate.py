@@ -27,15 +27,27 @@ RAW_PROBLEMS = [
 ]
 RAW_SUBMISSIONS = [
     {"id": "101", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
-     "user": "D22 鸡你太美队", "problem_index": "A", "language": "cpp"},
+     "team_id": "D22", "team_name": "鸡你太美队", "problem_index": "A", "language": "cpp"},
     {"id": "102", "submit_time": "2023/05/21 09:11:00", "status": "正在评测",
-     "user": "D23 另一队", "problem_index": "B", "language": "cpp"},
+     "team_id": "D23", "team_name": "另一队", "problem_index": "B", "language": "cpp"},
     {"id": "103", "submit_time": "2023/05/21 09:12:00", "status": "答案错误",
-     "user": "D22 鸡你太美队", "problem_index": "B", "language": "cpp"},
+     "team_id": "D22", "team_name": "鸡你太美队", "problem_index": "B", "language": "cpp"},
     {"id": "104", "submit_time": "bad-time", "status": "答案正确",
-     "user": "D24 脏队", "problem_index": "A", "language": "cpp"},
+     "team_id": "D24", "team_name": "脏队", "problem_index": "A", "language": "cpp"},
     {"id": "105", "submit_time": "2023/05/21 09:13:00", "status": "答案正确",
-     "user": "无法解析的用户", "problem_index": "A", "language": "cpp"},
+     "team_name": "缺team_id-secret", "problem_index": "A", "language": "cpp"},
+]
+
+ROSTER = [
+    {"id": "1901545194649161728", "name": "张三", "label": "张三",
+     "group_id": "1901545194649161728", "organization_id": "1901545194649161728",
+     "organization_name": "DSA_2024"},
+    {"id": "2032742953069465601", "name": "李四", "label": "李四",
+     "group_id": "2032742953069465600", "organization_id": "2032742953069465600",
+     "organization_name": "DSA_2025"},
+    {"id": "2032742953069465602", "name": "王五", "label": "王五",
+     "group_id": "2032742953069465600", "organization_id": "2032742953069465600",
+     "organization_name": "DSA_2025"},
 ]
 
 
@@ -53,18 +65,73 @@ def test_contest_and_state():
     assert data.state["ended"] is None
 
 
-def test_team_reverse_derivation_and_manual_merge():
+def test_team_backfill_and_manual_merge():
     data = t()
     t22 = data.teams["D22"]
     assert t22["label"] == "D22"
     assert t22["name"] == "鸡你太美队"
-    assert t22["group_id"] == "D"
-    assert t22["organization_id"] == "org1"
+    assert t22["group_id"] is None  # no roster → nothing knows the group
+    assert t22["organization_id"] == "org1"  # manual wins
     assert t22["icpc_id"] == "2023001"
     assert data.teams["D23"]["name"] == "另一队"
-    assert data.teams["D23"]["group_id"] == "D"
+    assert data.teams["D23"]["group_id"] is None
+    assert data.groups["D"]["name"] == "4078"  # manual group untouched
+    assert "D23" not in data.groups  # submissions no longer invent groups
+
+
+def test_roster_teams_organizations_and_zero_submission_survival():
+    data = translate("999", MANUAL, RAW_SUBMISSIONS, RAW_PROBLEMS, ROSTER, NOW)
+    # every roster member is a team, even with zero submissions (王五)
+    assert {"1901545194649161728", "2032742953069465601",
+            "2032742953069465602"} <= set(data.teams)
+    zhang = data.teams["1901545194649161728"]
+    assert zhang["name"] == zhang["label"] == "张三"
+    assert zhang["group_id"] == "1901545194649161728"
+    assert zhang["organization_id"] == "1901545194649161728"
+    assert "2032742953069465602" not in {
+        s["team_id"] for s in data.submissions.values()}  # zero submissions
+    # organizations + mirrored groups from roster, raw long ids as-is
+    assert data.organizations["1901545194649161728"]["name"] == "DSA_2024"
+    assert data.organizations["2032742953069465600"]["name"] == "DSA_2025"
+    assert data.groups["1901545194649161728"] == {
+        "id": "1901545194649161728", "name": "DSA_2024"}
+    assert data.groups["2032742953069465600"]["name"] == "DSA_2025"
+    # manual entries still present (applied before roster, not overwritten)
+    assert data.organizations["org1"]["name"] == "某大学"
     assert data.groups["D"]["name"] == "4078"
-    assert "D23" not in data.groups
+
+
+def test_roster_name_not_overwritten_by_submission_backfill():
+    roster = [{"id": "D22", "name": "真名", "label": "真名", "group_id": "G1",
+               "organization_id": "G1", "organization_name": "DSA_2024"}]
+    rows = [{"id": "501", "submit_time": "2023/05/21 09:10:00",
+             "status": "答案正确", "team_id": "D22", "team_name": "垃圾名",
+             "problem_index": "A", "language": "cpp"}]
+    data = translate("999", MANUAL, rows, RAW_PROBLEMS, roster, NOW)
+    assert data.teams["D22"]["name"] == "真名"
+    assert data.teams["D22"]["label"] == "真名"
+    assert data.submissions["501"]["team_id"] == "D22"
+
+
+def test_manual_team_override_wins_over_roster():
+    manual = dict(MANUAL, teams={"1901545194649161728": {
+        "organization_id": "org1", "icpc_id": "2023001"}})
+    data = translate("999", manual, [], RAW_PROBLEMS, ROSTER, NOW)
+    t = data.teams["1901545194649161728"]
+    assert t["organization_id"] == "org1"  # manual value survives roster
+    assert t["icpc_id"] == "2023001"
+    assert t["name"] == "张三"  # roster fills what manual omits
+
+
+def test_submission_team_not_in_roster_still_creates_team():
+    rows = [{"id": "601", "submit_time": "2023/05/21 09:10:00",
+             "status": "答案正确", "team_id": "9998887776665554443",
+             "team_name": "旁听生", "problem_index": "A", "language": "cpp"}]
+    data = translate("999", MANUAL, rows, RAW_PROBLEMS, ROSTER, NOW)
+    assert data.submissions["601"]["team_id"] == "9998887776665554443"
+    t = data.teams["9998887776665554443"]
+    assert t["name"] == "旁听生"
+    assert t["organization_id"] is None
 
 
 def test_problems_labels_and_manual_color():
@@ -80,7 +147,7 @@ def test_problems_labels_and_manual_color():
 def test_submissions_and_judgements():
     data = t()
     assert "104" not in data.submissions  # bad time skipped
-    assert "105" not in data.submissions  # unparsable user skipped
+    assert "105" not in data.submissions  # missing team_id skipped
     sub = data.submissions["101"]
     assert sub["team_id"] == "D22"
     assert sub["problem_id"] == "A"
@@ -118,11 +185,11 @@ def test_languages_collected_from_submissions():
 def test_translate_accepts_enum_status():
     rows = [
         {"id": "201", "submit_time": "2023/05/21 09:10:00", "status": "ACCEPTED",
-         "user": "D22 鸡你太美队", "problem_index": "A", "language": "cpp"},
+         "team_id": "D22", "team_name": "鸡你太美队", "problem_index": "A", "language": "cpp"},
         {"id": "202", "submit_time": "2023/05/21 09:11:00", "status": "WRONG_ANSWER",
-         "user": "D22 鸡你太美队", "problem_index": "A", "language": "cpp"},
+         "team_id": "D22", "team_name": "鸡你太美队", "problem_index": "A", "language": "cpp"},
         {"id": "203", "submit_time": "2023/05/21 09:12:00", "status": "JUDGING",
-         "user": "D22 鸡你太美队", "problem_index": "A", "language": "cpp"},
+         "team_id": "D22", "team_name": "鸡你太美队", "problem_index": "A", "language": "cpp"},
     ]
     data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
     assert data.judgements["201"]["judgement_type_id"] == "AC"
@@ -131,37 +198,12 @@ def test_translate_accepts_enum_status():
     assert data.judgements["203"]["end_time"] is None
 
 
-def test_unparsable_user_log_does_not_leak_user(caplog):
+def test_missing_team_id_log_does_not_leak_team_name(caplog):
     rows = [
         {"id": "301", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
-         "user": "无法解析的用户-secret", "problem_index": "A", "language": "cpp"},
+         "team_name": "缺team_id-secret", "problem_index": "A", "language": "cpp"},
     ]
     with caplog.at_level(logging.WARNING):
         translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
     assert "301" in caplog.text
-    assert "无法解析的用户-secret" not in caplog.text
-
-
-def test_student_number_user_format():
-    rows = [
-        {"id": "401", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
-         "user": "2026175015 昵称4663", "problem_index": "A", "language": "cpp"},
-    ]
-    data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
-    team = data.teams["2026175015"]
-    assert team["name"] == "昵称4663"
-    assert team["group_id"] == "0"
-    assert data.groups["0"]["id"] == "0"
-    assert data.submissions["401"]["team_id"] == "2026175015"
-
-
-def test_seat_form_still_wins_over_token_fallback():
-    rows = [
-        {"id": "402", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
-         "user": "D22 鸡你太美队", "problem_index": "A", "language": "cpp"},
-        {"id": "403", "submit_time": "2023/05/21 09:11:00", "status": "答案正确",
-         "user": "无法解析的用户", "problem_index": "A", "language": "cpp"},
-    ]
-    data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
-    assert data.teams["D22"]["group_id"] == "D"
-    assert "403" not in data.submissions
+    assert "缺team_id-secret" not in caplog.text

@@ -12,9 +12,9 @@ MANUAL = {"contest": {"name": "省赛", "start_time": "2023-05-21T09:00:00+08:00
                       "duration": "5:00:00", "pta_timezone": "+08:00"}}
 SUBS = [
     {"id": "1", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
-     "user": "D22 队", "problem_index": "A", "language": "cpp"},
+     "team_id": "D22", "team_name": "队", "problem_index": "A", "language": "cpp"},
     {"id": "2", "submit_time": "2023/05/21 09:11:00", "status": "答案错误",
-     "user": "D23 队", "problem_index": "A", "language": "cpp"},
+     "team_id": "D23", "team_name": "二队", "problem_index": "A", "language": "cpp"},
 ]
 
 
@@ -143,7 +143,7 @@ class _LifespanFakeClient:
         return []
 
     async def fetch_teams(self):
-        return None
+        return []
 
 
 def _make_lifespan_app(closable: bool):

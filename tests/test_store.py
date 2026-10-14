@@ -16,7 +16,7 @@ def make(subs: list[dict]) -> object:
 
 def base_sub(sid: str, status: str = "答案正确") -> dict:
     return {"id": sid, "submit_time": "2023/05/21 09:10:00", "status": status,
-            "user": "D22 队", "problem_index": "A", "language": "cpp"}
+            "team_id": "D22", "team_name": "队", "problem_index": "A", "language": "cpp"}
 
 
 def test_first_apply_creates_events():

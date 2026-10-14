@@ -29,6 +29,10 @@ class Poller:
         }
         self._stop = asyncio.Event()
         self._last_config_poll = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        # last successful roster; re-passed to translate() on every
+        # non-config round so zero-submission teams don't vanish (and
+        # re-create/delete in event storms) between config refreshes.
+        self._last_teams: list[dict] | None = None
 
     async def poll_once(self) -> None:
         try:
@@ -39,10 +43,11 @@ class Poller:
                 >= self.settings.config_poll_seconds
             )
             raw_problems: list[dict] = []
-            raw_teams = None
             if need_config:
                 raw_problems = await self.client.fetch_problems()
-                raw_teams = await self.client.fetch_teams()
+                # failure raises → whole poll cycle retried (never a
+                # partial roster)
+                self._last_teams = await self.client.fetch_teams()
                 self._last_config_poll = _now()
             else:
                 snap = self.store.snapshot()
@@ -53,6 +58,7 @@ class Poller:
                          "color": p.get("color"), "rgb": p.get("rgb")}
                         for p in snap.problems.values()
                     ]
+            raw_teams = list(self._last_teams) if self._last_teams is not None else None
             data = translate(self.settings.contest_id, self.manual,
                              raw_subs, raw_problems, raw_teams, _now())
             self.store.apply_all(data)

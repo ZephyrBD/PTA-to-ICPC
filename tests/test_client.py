@@ -7,22 +7,32 @@ from pathlib import Path
 import httpx
 import pytest
 
+from pta2ccs.models import sanitize_id
 from pta2ccs.pta.client import PtaAuthError, PtaClient
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "pta"
+MEMBERS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "members.json"
 BASE_URL = "https://pintia.cn"
 CONTEST_ID = "1000000000000000000"
 COOKIE = "secret-cookie-value"
 TIME_RE = re.compile(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}$")
+MEMBERS_FILTER = (
+    '{"studentUserFilter":{"keyword":"","unbindOnly":false,'
+    '"field":"STUDENT_NUMBER"}}'
+)
 
 
 def load(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def make_client(handler) -> PtaClient:
+def load_members() -> dict:
+    return json.loads(MEMBERS_FIXTURE.read_text(encoding="utf-8"))
+
+
+def make_client(handler, **kwargs) -> PtaClient:
     return PtaClient(BASE_URL, CONTEST_ID, COOKIE,
-                     transport=httpx.MockTransport(handler))
+                     transport=httpx.MockTransport(handler), **kwargs)
 
 
 async def _run(client: PtaClient, coro):
@@ -40,10 +50,14 @@ def fetch_problems(client: PtaClient) -> list[dict]:
     return asyncio.run(_run(client, client.fetch_problems()))
 
 
-def expected_user(payload: dict, row: dict) -> str:
+def fetch_teams(client: PtaClient) -> list[dict]:
+    return asyncio.run(_run(client, client.fetch_teams()))
+
+
+def expected_team(payload: dict, row: dict) -> tuple[str, str]:
     member = payload["examMemberByUserId"][row["userId"]]
     stu = payload["studentUserById"][member["studentUserId"]]
-    return f"{stu['studentNumber']} {stu['name']}"
+    return sanitize_id(member["studentUserId"]), stu["name"]
 
 
 def test_fetch_submissions_normalizes_rows():
@@ -67,8 +81,15 @@ def test_fetch_submissions_normalizes_rows():
     # enum passthrough, no translation
     assert [r["status"] for r in rows] == [r["status"] for r in raw_rows]
     assert first["status"] == "ACCEPTED"
-    assert first["user"] == expected_user(payload, raw_first)
-    assert all(r["user"] for r in rows)
+    # team identity comes from the studentUserById chain, never a student number
+    team_id, team_name = expected_team(payload, raw_first)
+    assert first["team_id"] == team_id
+    assert first["team_name"] == team_name
+    assert "user" not in first
+    assert all(r["team_id"] and r["team_name"] is not None for r in rows)
+    dump = json.dumps(rows, ensure_ascii=False)
+    for stu in payload["studentUserById"].values():
+        assert stu["studentNumber"] not in dump
     assert first["problem_index"] == \
         payload["problemSetProblemById"][raw_first["problemSetProblemId"]]["label"]
     assert first["problem_index"] == "1-1"
@@ -157,9 +178,85 @@ def test_fetch_problems_from_labels_endpoint():
         range(1, len(payload["labels"]) + 1))
 
 
-def test_fetch_teams_returns_none():
-    client = make_client(lambda request: httpx.Response(500))
-    assert asyncio.run(_run(client, client.fetch_teams())) is None
+def test_fetch_teams_merges_pages():
+    """Members use page/limit pagination (NOT the submissions cursor):
+    loop while a page returns exactly `limit` rows, then stop."""
+    payload = load_members()
+    members = payload["members"]
+    page_size = 20
+    calls: list[tuple[str | None, str | None]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/api/problem-sets/{CONTEST_ID}/members"
+        assert request.url.params.get("filter") == MEMBERS_FILTER
+        assert "%7B" in str(request.url)  # percent-encoded filter (Tomcat)
+        page, limit = request.url.params.get("page"), request.url.params.get("limit")
+        calls.append((page, limit))
+        start = int(page) * page_size
+        return httpx.Response(200, json=dict(
+            payload, members=members[start:start + page_size]))
+
+    teams = fetch_teams(make_client(handle, page_limit=page_size))
+    # 49 members / 20 per page → 3 pages, stop when a page is short
+    assert calls == [("0", "20"), ("1", "20"), ("2", "20")]
+    assert len(teams) == len(members) == 49
+    assert len({t["id"] for t in teams}) == 49  # no dupes across pages
+
+
+def test_fetch_teams_normalizes_roster():
+    payload = load_members()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    teams = fetch_teams(make_client(handle))
+    assert len(teams) == payload["total"] == 49
+    by_id = {t["id"]: t for t in teams}
+    for m in payload["members"]:
+        sid = m["studentUserId"]
+        stu = payload["studentUserById"][sid]
+        gid = m["userGroupId"]
+        team = by_id[sanitize_id(sid)]
+        # id = studentUserId, name = label = 姓名, group = org = raw group id
+        assert team["name"] == stu["name"]
+        assert team["label"] == stu["name"]
+        assert team["group_id"] == gid
+        assert team["organization_id"] == gid
+        assert team["organization_name"] == payload["userGroups"][gid]["name"]
+    dump = json.dumps(teams, ensure_ascii=False)
+    for stu in payload["studentUserById"].values():
+        assert stu["studentNumber"] not in dump
+    org_names = {t["organization_name"] for t in teams}
+    assert org_names == {g["name"] for g in payload["userGroups"].values()}
+
+
+def test_submission_team_fallback_when_chain_broken():
+    """No examMemberByUserId entry → team from userId + nickname, never a
+    student number; missing nickname → empty team_name."""
+    subs_payload = {
+        "submissions": [
+            {"id": "1", "userId": "u1", "problemSetProblemId": "424242",
+             "submitAt": "2026-10-13T11:00:00Z", "status": "ACCEPTED",
+             "compiler": "GXX"},
+            {"id": "2", "userId": "u2", "problemSetProblemId": "424242",
+             "submitAt": "2026-10-13T11:01:00Z", "status": "ACCEPTED",
+             "compiler": "GXX"},
+        ],
+        "hasBefore": False, "hasAfter": False,
+        "examMemberByUserId": {},  # broken chain
+        "studentUserById": {},
+        "userById": {"u1": {"nickname": "nick-u1"}},
+        "problemSetProblemById": {"424242": {"id": "424242", "label": "1-1"}},
+    }
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=subs_payload)
+
+    rows = fetch_submissions(make_client(handle))
+    assert rows[0]["team_id"] == sanitize_id("u1") == "u1"
+    assert rows[0]["team_name"] == "nick-u1"
+    assert rows[1]["team_id"] == sanitize_id("u2") == "u2"
+    assert rows[1]["team_name"] == ""
 
 
 def test_problem_ids_agree_with_submission_problem_index():

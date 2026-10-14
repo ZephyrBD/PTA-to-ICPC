@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import re
 from dataclasses import dataclass, field
 
 from .models import sanitize_id
@@ -29,9 +28,6 @@ BUILTIN_JUDGEMENT_TYPES = {
     "SE": {"name": "Submission Error", "penalty": False, "solved": False},
     "PA": {"name": "Partial Accepted", "penalty": True, "solved": False},
 }
-
-SEAT_USER_RE = re.compile(r"^([A-Za-z]\d{1,2})\s+(\S.*)$")
-TOKEN_USER_RE = re.compile(r"^([A-Za-z0-9]{3,36})\s+(\S.*)$")
 
 
 @dataclass
@@ -80,24 +76,6 @@ def _build_state(contest: dict, now: dt.datetime) -> dict:
     return state
 
 
-def _parse_user(user: str) -> tuple[str, str, str] | None:
-    """Return (team_id, team_name, group_id) or None.
-
-    Seat form "D22 队名" is tried first (room letter = group); then the real
-    PTA user form "2026175015 昵称4663" (studentNumber + space + name) with a
-    synthetic group "0".
-    """
-    text = user.strip()
-    m = SEAT_USER_RE.match(text)
-    if m:
-        team_id = sanitize_id(m.group(1).upper())
-        return team_id, m.group(2), team_id[0]
-    m = TOKEN_USER_RE.match(text)
-    if m:
-        return sanitize_id(m.group(1)), m.group(2), "0"
-    return None
-
-
 def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
               raw_problems: list[dict], raw_teams: list[dict] | None,
               now: dt.datetime) -> ContestData:
@@ -137,15 +115,25 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
         if lid not in data.languages:
             data.languages[lid] = {"id": lid, "name": lang}
 
+    # roster (raw_teams from PtaClient.fetch_teams): every member is a team,
+    # even with zero submissions. Manual entries were applied above and win —
+    # setdefault only fills what manual omitted.
     for row in raw_teams or []:
         tid = sanitize_id(str(row["id"]))
-        data.teams[tid] = {
-            "id": tid, "name": row.get("name", tid), "label": row.get("label", tid),
-            "group_id": row.get("group_id"), "organization_id": row.get("organization_id"),
-            "icpc_id": row.get("icpc_id"),
-        }
-        room = str(row.get("group_id") or tid[:1])
-        data.groups.setdefault(room, {"id": room, "name": room})
+        team = data.teams.setdefault(tid, {"id": tid})
+        team.setdefault("name", str(row.get("name") or tid))
+        team.setdefault("label", str(row.get("label") or tid))
+        team.setdefault("group_id", row.get("group_id"))
+        team.setdefault("organization_id", row.get("organization_id"))
+        team.setdefault("icpc_id", row.get("icpc_id"))
+        # organizations (and mirrored groups) from the PTA user groups;
+        # raw long numeric ids pass sanitize_id unchanged.
+        oid = row.get("organization_id") or row.get("group_id")
+        if oid:
+            oid = sanitize_id(str(oid))
+            oname = str(row.get("organization_name") or oid)
+            data.organizations.setdefault(oid, {"id": oid, "name": oname})
+            data.groups.setdefault(oid, {"id": oid, "name": oname})
 
     start = dt.datetime.fromisoformat(data.contest["start_time"]) if data.contest["start_time"] else None
     for row in raw_submissions:
@@ -154,25 +142,30 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
         except (KeyError, ValueError, TypeError) as e:
             log.warning("skip submission with bad time: %s (%s)", row.get("id"), e)
             continue
-        parsed = _parse_user(str(row.get("user", "")))
-        if parsed is None:
-            log.warning("skip submission with unparsable user: %s (unparsable user field)", row.get("id"))
+        raw_team_id = str(row.get("team_id") or "")
+        if not raw_team_id:
+            # malformed row: no client-normalized identity to attach it to
+            # (log the id only — never the team name)
+            log.warning("skip submission with missing team_id: %s", row.get("id"))
             continue
-        team_id, team_name, room = parsed
+        team_id = sanitize_id(raw_team_id)
+        team_name = str(row.get("team_name") or "")
         team = data.teams.get(team_id)
         if team is None:
+            # submission whose team is not in the roster: still create the
+            # team entry — never drop the submission
             data.teams[team_id] = {
-                "id": team_id, "name": team_name, "label": team_id,
-                "group_id": room, "organization_id": None, "icpc_id": None,
+                "id": team_id, "name": team_name or team_id, "label": team_id,
+                "group_id": None, "organization_id": None, "icpc_id": None,
             }
         else:
-            # manual-defined team: fill fields the submission row can derive (manual wins)
-            team.setdefault("name", team_name)
+            # roster/manual-defined team: fill fields the submission row can
+            # derive (existing values — roster and manual — win)
+            team.setdefault("name", team_name or team_id)
             team.setdefault("label", team_id)
-            team.setdefault("group_id", room)
+            team.setdefault("group_id", None)
             team.setdefault("organization_id", None)
             team.setdefault("icpc_id", None)
-        data.groups.setdefault(room, {"id": room, "name": room})
         sid = sanitize_id(str(row["id"]))
         problem_id = sanitize_id(str(row.get("problem_index", "")))
         language_id = sanitize_id(str(row.get("language", "unknown")))

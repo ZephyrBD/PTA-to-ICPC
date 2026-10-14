@@ -1,15 +1,22 @@
 import asyncio
-import datetime as dt
 
 from pta2ccs.config import Settings
 from pta2ccs.poller import Poller
 from pta2ccs.store import Store
+
+ZERO_SUB_TEAM_ID = "9001540000000000001"
 
 
 class FakeClient:
     def __init__(self):
         self.subs = []
         self.problems = [{"id": "A", "title": "题A"}]
+        self.teams = [{
+            "id": ZERO_SUB_TEAM_ID, "name": "无提交队", "label": "无提交队",
+            "group_id": "1901545194649161728", "organization_id": "1901545194649161728",
+            "organization_name": "DSA_2024",
+        }]
+        self.teams_calls = 0
 
     async def fetch_submissions(self):
         return list(self.subs)
@@ -18,12 +25,14 @@ class FakeClient:
         return list(self.problems)
 
     async def fetch_teams(self):
-        return None
+        self.teams_calls += 1
+        return list(self.teams)
 
 
-def make_poller() -> tuple[Poller, FakeClient, Store]:
+def make_poller(config_poll_seconds: float = 0.01) -> tuple[Poller, FakeClient, Store]:
     settings = Settings(contest_id="1", pta_cookie="c",
-                        poll_interval_seconds=0.01, config_poll_seconds=0.01)
+                        poll_interval_seconds=0.01,
+                        config_poll_seconds=config_poll_seconds)
     client = FakeClient()
     store = Store()
     manual = {"contest": {"start_time": "2023-05-21T09:00:00+08:00",
@@ -34,8 +43,8 @@ def make_poller() -> tuple[Poller, FakeClient, Store]:
 def test_poll_once_populates_store():
     poller, client, store = make_poller()
     client.subs = [{"id": "1", "submit_time": "2023/05/21 09:10:00",
-                    "status": "答案正确", "user": "D22 队", "problem_index": "A",
-                    "language": "cpp"}]
+                    "status": "答案正确", "team_id": "D22", "team_name": "队",
+                    "problem_index": "A", "language": "cpp"}]
     asyncio.run(poller.poll_once())
     assert store.snapshot() is not None
     assert "1" in store.snapshot().submissions
@@ -61,10 +70,29 @@ def test_poll_once_bad_row_does_not_crash():
     poller, client, store = make_poller()
     client.subs = [
         {"id": "1", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
-         "user": "D22 队", "problem_index": "A", "language": "cpp"},
+         "team_id": "D22", "team_name": "队", "problem_index": "A", "language": "cpp"},
         {"id": "2", "submit_time": "???bad", "status": "答案正确",
-         "user": "D23 队", "problem_index": "A", "language": "cpp"},
+         "team_id": "D23", "team_name": "二队", "problem_index": "A", "language": "cpp"},
     ]
     asyncio.run(poller.poll_once())
     assert "1" in store.snapshot().submissions
     assert "2" not in store.snapshot().submissions
+
+
+def test_need_config_fetches_teams_and_non_config_uses_cached_roster():
+    # config_poll_seconds=60 → only the first poll is need_config; every
+    # later round must reuse the cached roster or the zero-submission team
+    # would vanish from translate(raw_teams=None) on the next poll.
+    poller, client, store = make_poller(config_poll_seconds=60.0)
+    asyncio.run(poller.poll_once())
+    assert client.teams_calls == 1
+    snap = store.snapshot()
+    assert ZERO_SUB_TEAM_ID in snap.teams
+    assert snap.organizations["1901545194649161728"]["name"] == "DSA_2024"
+    assert snap.groups["1901545194649161728"]["name"] == "DSA_2024"
+    for _ in range(2):  # non-config rounds
+        asyncio.run(poller.poll_once())
+    assert client.teams_calls == 1  # roster not re-fetched
+    snap = store.snapshot()
+    assert ZERO_SUB_TEAM_ID in snap.teams  # cached roster passed to translate
+    assert snap.teams[ZERO_SUB_TEAM_ID]["name"] == "无提交队"
