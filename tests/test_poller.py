@@ -131,7 +131,9 @@ def test_need_config_fetches_teams_and_non_config_uses_cached_roster():
     snap = store.snapshot()
     assert ZERO_SUB_TEAM_ID in snap.teams
     assert snap.organizations["1901545194649161728"]["name"] == "DSA_2024"
-    assert snap.groups["1901545194649161728"]["name"] == "DSA_2024"
+    # PTA userGroups no longer mirror into groups; groups are manual-only
+    assert "1901545194649161728" not in snap.groups
+    assert snap.teams[ZERO_SUB_TEAM_ID]["group_ids"] == []
     for _ in range(2):  # non-config rounds
         asyncio.run(poller.poll_once())
     assert client.teams_calls == 1  # roster not re-fetched

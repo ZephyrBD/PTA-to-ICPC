@@ -82,11 +82,11 @@ def test_team_backfill_and_manual_merge():
     t22 = data.teams["D22"]
     assert t22["label"] == "D22"
     assert t22["name"] == "鸡你太美队"
-    assert t22["group_id"] is None  # no roster → nothing knows the group
+    assert t22["group_ids"] == []  # no manual entry → empty array
     assert t22["organization_id"] == "org1"  # manual wins
     assert t22["icpc_id"] == "2023001"
     assert data.teams["D23"]["name"] == "另一队"
-    assert data.teams["D23"]["group_id"] is None
+    assert data.teams["D23"]["group_ids"] == []
     assert data.groups["D"]["name"] == "4078"  # manual group untouched
     assert "D23" not in data.groups  # submissions no longer invent groups
 
@@ -99,19 +99,18 @@ def test_roster_teams_organizations_and_zero_submission_survival():
     zhang = data.teams["1901545194649161728"]
     assert zhang["name"] == "张三"
     assert zhang["label"] == "2022000001"  # roster label = 学号
-    assert zhang["group_id"] == "1901545194649161728"
+    assert zhang["group_ids"] == []  # roster never invents group_ids
     assert zhang["organization_id"] == "1901545194649161728"
     assert "2032742953069465602" not in {
         s["team_id"] for s in data.submissions.values()}  # zero submissions
-    # organizations + mirrored groups from roster, raw long ids as-is
+    # organizations from roster user groups, raw long ids as-is
     assert data.organizations["1901545194649161728"]["name"] == "DSA_2024"
     assert data.organizations["2032742953069465600"]["name"] == "DSA_2025"
-    assert data.groups["1901545194649161728"] == {
-        "id": "1901545194649161728", "name": "DSA_2024"}
-    assert data.groups["2032742953069465600"]["name"] == "DSA_2025"
+    # userGroups no longer mirror into groups; groups come only from manual
+    assert set(data.groups) == {"D"}
+    assert data.groups["D"]["name"] == "4078"
     # manual entries still present (applied before roster, not overwritten)
     assert data.organizations["org1"]["name"] == "某大学"
-    assert data.groups["D"]["name"] == "4078"
 
 
 def test_roster_sanitizes_group_ids_and_null_missing():
@@ -123,13 +122,14 @@ def test_roster_sanitizes_group_ids_and_null_missing():
     ]
     data = translate("999", MANUAL, [], RAW_PROBLEMS, roster, NOW)
     t1 = data.teams["t1"]
-    assert t1["group_id"] == t1["organization_id"] == "G-1"
-    # org/group keyed on the same sanitized id the team references
+    # PTA userGroups feed organization_id only (never group_ids)
+    assert t1["organization_id"] == "G-1"
+    assert t1["group_ids"] == []
     assert data.organizations["G-1"]["name"] == "机房 1"
-    assert data.groups["G-1"]["name"] == "机房 1"
+    assert "G-1" not in data.groups  # no organization→group mirror
     assert "G 1" not in data.organizations
     t2 = data.teams["t2"]
-    assert t2["group_id"] is None
+    assert t2["group_ids"] == []
     assert t2["organization_id"] is None
     assert "" not in data.organizations
     assert set(data.organizations) == {"org1", "G-1"}
@@ -167,6 +167,38 @@ def test_submission_team_not_in_roster_still_creates_team():
     t = data.teams["9998887776665554443"]
     assert t["name"] == "旁听生"
     assert t["organization_id"] is None
+    assert t["group_ids"] == []  # submission-derived fallback: empty array
+
+
+def test_manual_group_ids_applied_and_roster_does_not_add():
+    """group_ids come only from manual; a roster-only team gets []."""
+    manual = dict(MANUAL, teams={
+        "1901545194649161728": {"group_ids": ["g1"]},
+        "D22": {"organization_id": "org1", "icpc_id": "2023001"},
+    }, groups={"g1": {"name": "正式队伍"}})
+    data = translate("999", manual, [], RAW_PROBLEMS, ROSTER, NOW)
+    zhang = data.teams["1901545194649161728"]
+    assert zhang["group_ids"] == ["g1"]
+    assert zhang["organization_id"] == "1901545194649161728"  # from PTA userGroup
+    # roster-only team: the raw roster never introduces group_ids
+    assert data.teams["2032742953069465601"]["group_ids"] == []
+    # groups holds ONLY the manual-defined classification group
+    assert set(data.groups) == {"g1"}
+    assert data.groups["g1"]["name"] == "正式队伍"
+    assert "DSA_2024" not in {g["name"] for g in data.groups.values()}
+
+
+def test_pta_user_group_no_longer_mirrors_into_groups():
+    data = translate("999", MANUAL, [], RAW_PROBLEMS, ROSTER, NOW)
+    assert set(data.groups) == {"D"}  # manual only
+    assert data.organizations["1901545194649161728"]["name"] == "DSA_2024"
+
+
+def test_manual_problem_color_wins_over_palette():
+    manual = dict(MANUAL, problems={"A": {"color": "blue", "rgb": "#0000ff"}})
+    data = translate("999", manual, [], RAW_PROBLEMS, None, NOW)
+    assert data.problems["A"]["color"] == "blue"
+    assert data.problems["A"]["rgb"] == "#0000ff"
 
 
 def test_problems_labels_and_manual_color():

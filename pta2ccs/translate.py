@@ -201,21 +201,22 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
         team = data.teams.setdefault(tid, {"id": tid})
         team.setdefault("name", str(row.get("name") or tid))
         team.setdefault("label", str(row.get("label") or tid))
-        # ids sanitized once here so team refs and organizations/groups
-        # keys always agree (client normalizes too; sanitize is idempotent)
-        gid = row.get("group_id")
+        # ids sanitized once here so team refs and organizations keys always
+        # agree (client normalizes too; sanitize is idempotent). PTA user
+        # groups feed organization_id + organizations ONLY; `groups` is a
+        # separate operator-defined classification and is never mirrored here.
         org = row.get("organization_id")
-        gid = sanitize_id(str(gid)) if gid not in (None, "") else None
+        if org in (None, ""):
+            org = row.get("group_id")  # legacy roster shape fallback
         org = sanitize_id(str(org)) if org not in (None, "") else None
-        team.setdefault("group_id", gid)
         team.setdefault("organization_id", org)
+        # manual-provided group_ids win (applied above); the raw roster never
+        # introduces group_ids, so a team with no manual entry gets []
+        team.setdefault("group_ids", [])
         team.setdefault("icpc_id", row.get("icpc_id"))
-        # organizations (and mirrored groups) from the PTA user groups
-        oid = org or gid
-        if oid:
-            oname = str(row.get("organization_name") or oid)
-            data.organizations.setdefault(oid, {"id": oid, "name": oname})
-            data.groups.setdefault(oid, {"id": oid, "name": oname})
+        if org:
+            oname = str(row.get("organization_name") or org)
+            data.organizations.setdefault(org, {"id": org, "name": oname})
 
     start = dt.datetime.fromisoformat(data.contest["start_time"]) if data.contest["start_time"] else None
     for row in raw_submissions:
@@ -238,14 +239,14 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
             # team entry — never drop the submission
             data.teams[team_id] = {
                 "id": team_id, "name": team_name or team_id, "label": team_id,
-                "group_id": None, "organization_id": None, "icpc_id": None,
+                "group_ids": [], "organization_id": None, "icpc_id": None,
             }
         else:
             # roster/manual-defined team: fill fields the submission row can
             # derive (existing values — roster and manual — win)
             team.setdefault("name", team_name or team_id)
             team.setdefault("label", team_id)
-            team.setdefault("group_id", None)
+            team.setdefault("group_ids", [])
             team.setdefault("organization_id", None)
             team.setdefault("icpc_id", None)
         sid = sanitize_id(str(row["id"]))

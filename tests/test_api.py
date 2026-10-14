@@ -66,6 +66,8 @@ def test_access():
         "id", "judgement_id", "ordinal", "judgement_type_id", "time",
         "contest_time", "submission_id", "team_id", "problem_id", "run_time",
         "memory", "exit_code", "judge_time"]
+    assert "group_ids" in by_type["teams"]
+    assert "group_id" not in by_type["teams"]
 
 
 def test_collections_and_items():

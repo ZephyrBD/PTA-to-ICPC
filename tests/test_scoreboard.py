@@ -19,9 +19,9 @@ def make_data(rows=None) -> ContestData:
         "thawed": None, "finalized": None, "end_of_updates": None,
     }
     data.teams = {
-        "D22": {"id": "D22", "group_id": "D"},
-        "D23": {"id": "D23", "group_id": "D"},
-        "E01": {"id": "E01", "group_id": "E"},
+        "D22": {"id": "D22", "group_ids": ["D"]},
+        "D23": {"id": "D23", "group_ids": ["D"]},
+        "E01": {"id": "E01", "group_ids": ["E"]},
     }
     data.problems = {"A": {"id": "A"}, "B": {"id": "B"}}
     data.judgement_types = {k: dict(v, id=k) for k, v in BUILTIN_JUDGEMENT_TYPES.items()}
@@ -116,6 +116,18 @@ def test_rank_order_and_ties():
 def test_group_filter():
     sb = compute_scoreboard(make_data(), NOW, group_id="D")
     assert {r["team_id"] for r in sb["rows"]} == {"D22", "D23"}
+
+
+def test_group_filter_by_membership_multi_group():
+    data = make_data()
+    # D22 belongs to two groups; membership (not equality) drives the filter
+    data.teams["D22"]["group_ids"] = ["D", "official"]
+    data.teams["E01"]["group_ids"] = []  # no group → excluded from any filter
+    assert {r["team_id"] for r in
+            compute_scoreboard(data, NOW, group_id="official")["rows"]} == {"D22"}
+    assert {r["team_id"] for r in
+            compute_scoreboard(data, NOW, group_id="D")["rows"]} == {"D22", "D23"}
+    assert compute_scoreboard(data, NOW, group_id="nope")["rows"] == []
 
 
 def test_output_shape():

@@ -31,7 +31,7 @@ ACCESS_ENDPOINTS = [
     {"type": "groups", "properties": ["id", "name"]},
     {"type": "organizations", "properties": ["id", "name"]},
     {"type": "teams", "properties": [
-        "id", "name", "label", "group_id", "organization_id", "icpc_id"]},
+        "id", "name", "label", "group_ids", "organization_id", "icpc_id"]},
     {"type": "problems", "properties": [
         "id", "label", "name", "ordinal", "color", "rgb",
         "time_limit", "memory_limit", "code_limit", "test_data_count"]},

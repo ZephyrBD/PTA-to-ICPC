@@ -20,7 +20,7 @@ def compute_scoreboard(data: ContestData, now: dt.datetime,
     problem_ids = [p["id"] for p in problem_ids]
 
     teams = [t for t in data.teams.values()
-             if group_id is None or t.get("group_id") == group_id]
+             if group_id is None or group_id in (t.get("group_ids") or [])]
 
     by_team: dict[str, list] = {t["id"]: [] for t in teams}
     for sub in data.submissions.values():

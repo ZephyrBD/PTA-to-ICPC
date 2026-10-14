@@ -1,5 +1,5 @@
 {
   "groups": {
-    "PUT_PTA_USER_GROUP_ID_HERE": {"name": "显示名（如：2025级）"}
+    "g1": {"name": "正式队伍（示例）"}
   }
 }
