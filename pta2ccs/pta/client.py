@@ -258,8 +258,11 @@ class PtaClient:
                 "code_limit_kb": _to_int(cfg.get("codeSizeLimit")),
                 # CCS problem.test_data_count = number of test data sets.
                 # Only the LENGTH is emitted — the `cases` content (per-case
-                # hints / sample I/O) must never be stored or returned.
-                "test_data_count": len(cases) if isinstance(cases, list) else None,
+                # hints / sample I/O) must never be stored or returned. Live
+                # PTA returns `cases` as a dict keyed by case name (e.g.
+                # "data00"), not a list; both shapes count the same way.
+                "test_data_count": (len(cases)
+                                    if isinstance(cases, (list, dict)) else None),
             })
         return out
 

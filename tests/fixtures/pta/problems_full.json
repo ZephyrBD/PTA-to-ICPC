@@ -11,8 +11,8 @@
      "timeLimit": 1000,
      "memoryLimit": 128000,
      "codeSizeLimit": 64,
-     "stackSizeLimit": 1024,
-     "cases": [{"name": "1"}, {"name": "2"}, {"name": "3"}]
+      "stackSizeLimit": 1024,
+      "cases": {"1": {"score": 1}, "2": {"score": 1}, "3": {"score": 1}}
     }
    }
   },
