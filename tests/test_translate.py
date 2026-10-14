@@ -358,3 +358,122 @@ def test_manual_language_entry_wins_over_meta():
     manual = dict(MANUAL, languages={lid: {"name": "Manual C++"}})
     data = translate("999", manual, [], [], None, NOW, meta=META)
     assert data.languages[lid]["name"] == "Manual C++"
+
+
+# --- judgements enrichment (run_time/score), task 13 ----------------------
+
+def test_judgements_carry_max_run_time_and_score():
+    rows = [dict(RAW_SUBMISSIONS[0], run_time=0.003, score=5.0)]
+    data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
+    jud = data.judgements["101"]
+    assert jud["max_run_time"] == 0.003
+    assert jud["score"] == 5.0
+
+
+def test_judgements_missing_run_time_score_are_none():
+    data = t()  # RAW_SUBMISSIONS carry neither key
+    jud = data.judgements["101"]
+    assert jud["max_run_time"] is None
+    assert jud["score"] is None
+
+
+# --- problem limits, task 13 ---------------------------------------------
+
+def test_problem_limits_from_raw():
+    raw = [dict(RAW_PROBLEMS[0], time_limit_ms=100, memory_limit_kb=256000,
+                code_limit_kb=64)]
+    data = translate("999", MANUAL, [], raw, None, NOW)
+    p = data.problems["A"]
+    assert p["time_limit"] == "0:00:00.100"  # ms preserved via reltime
+    assert p["memory_limit"] == 256000
+    assert p["code_limit"] == 64
+
+
+def test_problem_limits_absent_when_raw_lacks_them():
+    data = t()
+    assert "time_limit" not in data.problems["A"]
+    assert "memory_limit" not in data.problems["A"]
+    assert "code_limit" not in data.problems["A"]
+
+
+def test_manual_problem_limits_win_over_raw():
+    manual = dict(MANUAL, problems={"A": {
+        "color": "red", "rgb": "#f00",
+        "time_limit": "0:00:02.000", "memory_limit": 1, "code_limit": 2}})
+    raw = [dict(RAW_PROBLEMS[0], time_limit_ms=100, memory_limit_kb=256000,
+                code_limit_kb=64)]
+    data = translate("999", manual, [], raw, None, NOW)
+    p = data.problems["A"]
+    assert p["time_limit"] == "0:00:02.000"  # manual wins
+    assert p["memory_limit"] == 1
+    assert p["code_limit"] == 2
+
+
+# --- per-submission detail: runs / files / sources, task 13 ---------------
+
+def detail_row(sid: str = "801", *, program: str | None = "int main(){}",
+               compiler: str = "GXX", runs: list[dict] | None = None) -> dict:
+    return {"id": sid, "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
+            "team_id": "D22", "team_name": "鸡你太美队", "problem_index": "A",
+            "language": "C++ (g++)", "detail_fetched": True,
+            "program": program, "compiler_enum": compiler,
+            "run_results": runs if runs is not None else [
+                {"case": "1", "result": "ACCEPTED", "time": 0.003,
+                 "memory": 598016, "exitcode": 0},
+                {"case": "data00", "result": "SKIPPED", "time": None,
+                 "memory": None, "exitcode": None},
+            ]}
+
+
+def test_detail_row_adds_files_sources_and_runs():
+    data = translate("999", MANUAL, [detail_row()], RAW_PROBLEMS, None, NOW)
+    sub = data.submissions["801"]
+    assert sub["files"] == [{
+        "href": "contests/999/submissions/801/files/main.cpp",
+        "filename": "main.cpp", "mime": "text/plain"}]
+    assert data.sources["801"] == "int main(){}"
+    r1 = data.runs["801-1"]
+    assert r1 == {"id": "801-1", "judgement_id": "801", "submission_id": "801",
+                  "team_id": "D22", "problem_id": "A", "run_time": 0.003,
+                  "memory": 584,  # 598016 bytes // 1024
+                  "exit_code": 0, "judge_time": "2023-05-21T09:10:00+08:00"}
+    r2 = data.runs["801-data00"]
+    assert set(r2) == set(r1)  # exactly these keys, no result/stdout
+    assert r2["run_time"] is None
+    assert r2["memory"] is None
+    assert r2["exit_code"] is None
+
+
+def test_detail_row_file_extension_by_compiler():
+    cases = [("JAVAC", "main.java"), ("PYTHON3", "main.py"),
+             ("GCC", "main.c"), ("RUBY", "main.txt")]
+    for compiler, filename in cases:
+        data = translate("999", MANUAL, [detail_row(compiler=compiler)],
+                         RAW_PROBLEMS, None, NOW)
+        assert data.submissions["801"]["files"][0]["filename"] == filename
+
+
+def test_detail_row_without_program_has_sources_but_no_files():
+    data = translate("999", MANUAL,
+                     [detail_row(program=None)], RAW_PROBLEMS, None, NOW)
+    assert data.sources["801"] == ""
+    assert "files" not in data.submissions["801"]
+    assert data.runs  # runs still built from run_results
+
+
+def test_non_detail_row_has_no_files_sources_runs():
+    data = t()  # plain RAW_SUBMISSIONS, no detail_fetched
+    assert data.sources == {}
+    assert data.runs == {}
+    assert "files" not in data.submissions["101"]
+
+
+def test_run_id_sanitizes_odd_case_keys():
+    runs = [{"case": "data 00/../x", "result": "ACCEPTED", "time": 0.1,
+             "memory": 1024, "exitcode": 0}]
+    data = translate("999", MANUAL, [detail_row(runs=runs)],
+                     RAW_PROBLEMS, None, NOW)
+    rid = sanitize_id("801-data 00/../x")
+    assert rid in data.runs
+    assert data.runs[rid]["submission_id"] == "801"
+    assert data.runs[rid]["memory"] == 1

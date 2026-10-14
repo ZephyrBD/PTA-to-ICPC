@@ -25,6 +25,22 @@ def make_client() -> TestClient:
     return TestClient(app)
 
 
+def make_detail_client() -> TestClient:
+    """Store seeded from a detail-enriched row: files href + sources +
+    one run (task 13)."""
+    detail_subs = [dict(SUBS[0], detail_fetched=True,
+                        program="#include <iostream>\nint main(){}\n",
+                        compiler_enum="GXX",
+                        run_results=[{"case": "1", "result": "ACCEPTED",
+                                      "time": 0.003, "memory": 2048,
+                                      "exitcode": 0}]),
+                   SUBS[1]]  # second row without detail
+    store = Store()
+    store.apply_all(translate("c1", MANUAL, detail_subs,
+                              [{"id": "A", "title": "题A"}], None, NOW))
+    return TestClient(create_app(store, poller=None, contest_id="c1"))
+
+
 def test_api_info():
     r = make_client().get("/")
     assert r.status_code == 200
@@ -39,6 +55,14 @@ def test_access():
     types = {e["type"] for e in body["endpoints"]}
     assert "submissions" in types
     assert "scoreboard" in types
+    assert "runs" in types
+    by_type = {e["type"]: e["properties"] for e in body["endpoints"]}
+    assert "files" in by_type["submissions"]
+    assert {"max_run_time", "score"} <= set(by_type["judgements"])
+    assert {"time_limit", "memory_limit", "code_limit"} <= set(by_type["problems"])
+    assert by_type["runs"] == ["id", "judgement_id", "submission_id", "team_id",
+                               "problem_id", "run_time", "memory", "exit_code",
+                               "judge_time"]
 
 
 def test_collections_and_items():
@@ -57,6 +81,50 @@ def test_collections_and_items():
 def test_filtering_by_team_id():
     r = make_client().get("/contests/c1/submissions?team_id=D22")
     assert [s["id"] for s in r.json()] == ["1"]
+
+
+def test_runs_collection_item_and_filter():
+    c = make_detail_client()
+    r = c.get("/contests/c1/runs")
+    assert r.status_code == 200
+    runs = r.json()
+    assert [x["id"] for x in runs] == ["1-1"]
+    assert runs[0]["submission_id"] == "1"
+    assert runs[0]["team_id"] == "D22"
+    assert runs[0]["problem_id"] == "A"
+    assert runs[0]["run_time"] == 0.003
+    assert runs[0]["memory"] == 2  # 2048 bytes → 2 KB
+    assert runs[0]["exit_code"] == 0
+    r = c.get("/contests/c1/runs/1-1")
+    assert r.status_code == 200
+    assert r.json()["judgement_id"] == "1"
+    r = c.get("/contests/c1/runs?team_id=D22")
+    assert [x["id"] for x in r.json()] == ["1-1"]
+    r = c.get("/contests/c1/runs?team_id=ZZ")
+    assert r.json() == []
+    r = c.get("/contests/c1/runs/nope")
+    assert r.status_code == 404
+    assert r.json() == {"code": 404, "message": "run not found: nope"}
+
+
+def test_submission_file_route():
+    c = make_detail_client()
+    r = c.get("/contests/c1/submissions/1/files/main.cpp")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    assert r.text == "#include <iostream>\nint main(){}\n"
+    # submissions without detail → file 404 (no sources entry)
+    r = c.get("/contests/c1/submissions/2/files/main.cpp")
+    assert r.status_code == 404
+    assert r.json() == {"code": 404, "message": "file not found: main.cpp"}
+    # unknown submission → submission 404
+    r = c.get("/contests/c1/submissions/nope/files/main.cpp")
+    assert r.status_code == 404
+    assert r.json() == {"code": 404, "message": "submission not found: nope"}
+    # submissions JSON advertises the files href
+    sub = c.get("/contests/c1/submissions/1").json()
+    assert sub["files"][0]["href"] == "contests/c1/submissions/1/files/main.cpp"
+    assert "files" not in c.get("/contests/c1/submissions/2").json()
 
 
 def test_empty_query_param_matches_null():

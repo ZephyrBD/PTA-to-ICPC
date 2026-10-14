@@ -30,6 +30,20 @@ BUILTIN_JUDGEMENT_TYPES = {
     "PA": {"name": "Partial Accepted", "penalty": True, "solved": False},
 }
 
+# compiler enum → source-file extension for the submissions files route
+# (only enums with a conventional extension; everything else → ".txt")
+COMPILER_EXTENSIONS = {
+    "GXX": ".cpp", "MODERN_GCC": ".cpp", "CLANGXX": ".cpp",
+    "GCC": ".c", "CLANG": ".c",
+    "OBJC": ".m", "JAVAC": ".java",
+    "PYTHON2": ".py", "PYTHON3": ".py", "PYPY3": ".py",
+    "MCS": ".cs", "GO": ".go",
+}
+
+
+def _file_ext(compiler_enum: str | None) -> str:
+    return COMPILER_EXTENSIONS.get(str(compiler_enum or ""), ".txt")
+
 
 @dataclass
 class ContestData:
@@ -43,6 +57,11 @@ class ContestData:
     judgement_types: dict[str, dict] = field(default_factory=dict)
     submissions: dict[str, dict] = field(default_factory=dict)
     judgements: dict[str, dict] = field(default_factory=dict)
+    # per-case runs (CCS "runs" collection); keyed by sanitized
+    # f"{submission_id}-{case}". sources maps submission_id → program text
+    # for the files route — never in any JSON collection, never diffed.
+    runs: dict[str, dict] = field(default_factory=dict)
+    sources: dict[str, str] = field(default_factory=dict)
 
 
 def _meta_start_time(meta: dict, tz: str) -> str | None:
@@ -144,6 +163,16 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
             "color": p.get("color", entry.get("color", color)),
             "rgb": p.get("rgb", entry.get("rgb", rgb)),
         })
+        # limits from PTA programmingProblemConfig (time in ms → reltime,
+        # memory/code in KB); manual entries win via setdefault — a manual
+        # time_limit/memory_limit/code_limit is never overwritten
+        if p.get("time_limit_ms") is not None:
+            entry.setdefault("time_limit",
+                             to_reltime(dt.timedelta(milliseconds=p["time_limit_ms"])))
+        if p.get("memory_limit_kb") is not None:
+            entry.setdefault("memory_limit", p["memory_limit_kb"])
+        if p.get("code_limit_kb") is not None:
+            entry.setdefault("code_limit", p["code_limit_kb"])
         data.problems[pid] = entry
 
     # enabled compilers from contest meta → advertised languages even with
@@ -235,5 +264,39 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
             "start_contest_time": contest_time,
             "end_time": to_iso_time(ts) if jtype else None,
             "end_contest_time": contest_time if jtype else None,
+            # list-row enrichment (time = seconds float, score = float);
+            # None when the row lacks them (pending / defensive)
+            "max_run_time": row.get("run_time"),
+            "score": row.get("score"),
         }
+        if row.get("detail_fetched"):
+            # per-submission detail (fetch_submission_detail): source
+            # text + per-case runs. sources is never in any JSON
+            # collection (files route reads it directly); runs is a
+            # first-class collection, diffed per-key by the store.
+            program = row.get("program") or ""
+            data.sources[sid] = program
+            if program:
+                ext = _file_ext(row.get("compiler_enum"))
+                data.submissions[sid]["files"] = [{
+                    "href": f"contests/{contest_id}/submissions/{sid}/files/main{ext}",
+                    "filename": f"main{ext}",
+                    "mime": "text/plain",
+                }]
+            for r in row.get("run_results") or []:
+                case = str(r.get("case", ""))
+                rid = sanitize_id(f"{sid}-{case}")
+                mem = r.get("memory")
+                data.runs[rid] = {
+                    "id": rid,
+                    "judgement_id": sid,
+                    "submission_id": sid,
+                    "team_id": team_id,
+                    "problem_id": problem_id,
+                    "run_time": r.get("time"),
+                    # PTA reports bytes; the Contest API uses KB
+                    "memory": (mem // 1024) if isinstance(mem, int) else None,
+                    "exit_code": r.get("exitcode"),
+                    "judge_time": to_iso_time(ts),
+                }
     return data

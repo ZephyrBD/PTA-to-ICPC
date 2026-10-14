@@ -7,13 +7,31 @@ import logging
 from .config import Settings
 from .pta.client import PtaAuthError, PtaClient
 from .store import Store
+from .timefmt import parse_reltime
 from .translate import translate
 
 log = logging.getLogger(__name__)
 
+# per-submission detail (source + runs) budget per poll round; no
+# persistence by design — first poll after restart fetches everything
+# again (capped here so a large backlog cannot stall the cycle)
+DETAIL_FETCH_LIMIT = 50
+DETAIL_CONCURRENCY = 4
+
 
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
+
+
+def _rel_to_ms(rel) -> int | None:
+    """Snapshot time_limit reltime ("0:00:01.000") → ms for the
+    non-config raw_problems rebuild (translate expects milliseconds)."""
+    if rel in (None, ""):
+        return None
+    try:
+        return round(parse_reltime(str(rel)).total_seconds() * 1000)
+    except (ValueError, TypeError):
+        return None
 
 
 class Poller:
@@ -36,10 +54,64 @@ class Poller:
         # last successful contest meta (freeze/compilers/times); same
         # caching pattern as the roster — fetched on config rounds only.
         self._last_meta: dict | None = None
+        # submission_id → status at last successful detail fetch; rows
+        # whose status changed since then get re-fetched (in-memory only,
+        # no cache files — by design)
+        self._detail_status: dict[str, str] = {}
+        # submission_id → last successful detail payload (program /
+        # compiler / run_results). fetch_submissions returns fresh row
+        # dicts every round, so fetched details must be re-attached from
+        # memory on rounds where nothing is re-fetched — otherwise
+        # runs/files/sources would vanish from the rebuilt snapshot.
+        self._detail_cache: dict[str, dict] = {}
+
+    async def _fetch_details(self, raw_subs: list[dict]) -> None:
+        """Attach source/run detail onto rows. Fetch (at most
+        DETAIL_FETCH_LIMIT per round, DETAIL_CONCURRENCY in flight) only
+        for ids whose status is new or changed since the last successful
+        fetch; then re-attach the cached payload for every row whose
+        cached status still matches. A per-id failure logs the id only,
+        leaves the stale cache unattached (status mismatch) and retries
+        next round; it never fails the whole poll cycle."""
+        by_id = {str(row["id"]): row for row in raw_subs}
+        needed = [
+            (sid, row.get("status"))
+            for sid, row in by_id.items()
+            if self._detail_status.get(sid) != row.get("status")
+        ][:DETAIL_FETCH_LIMIT]
+        if needed:
+            sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+
+            async def one(sid: str, status) -> None:
+                async with sem:
+                    try:
+                        detail = await self.client.fetch_submission_detail(sid)
+                    except Exception as e:
+                        # id only — never the program or raw response
+                        log.warning("detail fetch failed for %s: %s", sid, e)
+                        return
+                self._detail_cache[sid] = {
+                    "program": detail.get("program"),
+                    "compiler": detail.get("compiler"),
+                    "run_results": detail.get("run_results") or [],
+                }
+                self._detail_status[sid] = status
+
+            await asyncio.gather(*(one(sid, status) for sid, status in needed))
+        for sid, row in by_id.items():
+            cached = self._detail_cache.get(sid)
+            if (cached is None
+                    or self._detail_status.get(sid) != row.get("status")):
+                continue
+            row["program"] = cached["program"]
+            row["compiler_enum"] = cached["compiler"]
+            row["run_results"] = cached["run_results"]
+            row["detail_fetched"] = True
 
     async def poll_once(self) -> None:
         try:
             raw_subs = await self.client.fetch_submissions()
+            await self._fetch_details(raw_subs)
             need_config = (
                 self.store.snapshot() is None
                 or (_now() - self._last_config_poll).total_seconds()
@@ -68,7 +140,13 @@ class Poller:
                     raw_problems = [
                         {"id": p["id"], "title": p.get("name", p["id"]),
                          "label": p.get("label"), "ordinal": p.get("ordinal"),
-                         "color": p.get("color"), "rgb": p.get("rgb")}
+                         "color": p.get("color"), "rgb": p.get("rgb"),
+                         # round-trip limits so they don't vanish between
+                         # config refreshes (time_limit is stored as a
+                         # reltime string; translate expects ms)
+                         "time_limit_ms": _rel_to_ms(p.get("time_limit")),
+                         "memory_limit_kb": p.get("memory_limit"),
+                         "code_limit_kb": p.get("code_limit")}
                         for p in snap.problems.values()
                     ]
             raw_teams = list(self._last_teams) if self._last_teams is not None else None

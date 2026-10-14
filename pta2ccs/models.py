@@ -33,14 +33,20 @@ ACCESS_ENDPOINTS = [
     {"type": "teams", "properties": [
         "id", "name", "label", "group_id", "organization_id", "icpc_id"]},
     {"type": "problems", "properties": [
-        "id", "label", "name", "ordinal", "color", "rgb"]},
+        "id", "label", "name", "ordinal", "color", "rgb",
+        "time_limit", "memory_limit", "code_limit"]},
     {"type": "languages", "properties": ["id", "name"]},
     {"type": "judgement-types", "properties": ["id", "name", "penalty", "solved"]},
     {"type": "submissions", "properties": [
-        "id", "team_id", "problem_id", "language_id", "time", "contest_time"]},
+        "id", "team_id", "problem_id", "language_id", "time", "contest_time",
+        "files"]},
     {"type": "judgements", "properties": [
         "id", "submission_id", "judgement_type_id", "current",
-        "start_time", "start_contest_time", "end_time", "end_contest_time"]},
+        "start_time", "start_contest_time", "end_time", "end_contest_time",
+        "max_run_time", "score"]},
+    {"type": "runs", "properties": [
+        "id", "judgement_id", "submission_id", "team_id", "problem_id",
+        "run_time", "memory", "exit_code", "judge_time"]},
     {"type": "scoreboard", "properties": ["time", "contest_time", "state", "rows"]},
     {"type": "event-feed", "properties": ["type", "id", "data", "token"]},
 ]

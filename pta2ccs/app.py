@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from .config import Settings, load_manual, load_settings
 from .models import error_body, make_access, make_api_info
@@ -26,9 +26,10 @@ COLLECTIONS = {
     "judgement-types": ("judgement_types", None),
     "submissions": ("submissions", ("team_id", "problem_id", "language_id")),
     "judgements": ("judgements", ("submission_id", "judgement_type_id")),
+    "runs": ("runs", ("submission_id", "team_id", "problem_id")),
 }
 ITEM_SINGULAR = {
-    "submissions": "submission", "judgements": "judgement",
+    "submissions": "submission", "judgements": "judgement", "runs": "run",
     "teams": "team", "problems": "problem", "groups": "group",
     "organizations": "organization", "languages": "language",
     "judgement-types": "judgement type",
@@ -128,6 +129,19 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
     # /contests/{cid}/event-feed path is not shadowed (matched first)
     from .event_feed import register as _register_feed
     _register_feed(app, store, contest_id)
+
+    # source-file route (also before the catch-all routes): the Contest
+    # API files href points here; program text comes from snapshot.sources
+    @app.get("/contests/{cid}/submissions/{sid}/files/{filename}")
+    async def submission_file(cid: str, sid: str, filename: str):
+        require_cid(cid)
+        snap = require_snap()
+        if sid not in snap.submissions:
+            raise HTTPException(404, error_body(404, f"submission not found: {sid}"))
+        program = snap.sources.get(sid)
+        if program is None:
+            raise HTTPException(404, error_body(404, f"file not found: {filename}"))
+        return PlainTextResponse(program, media_type="text/plain; charset=utf-8")
 
     @app.get("/contests/{cid}/{collection}")
     async def collection(cid: str, collection: str, request: Request):

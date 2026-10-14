@@ -23,12 +23,18 @@ def to_iso_time(d: dt.datetime) -> str:
 
 
 def to_reltime(td: dt.timedelta) -> str:
-    total = int(td.total_seconds())
-    if total < 0:
+    # exact integer millisecond math (total_seconds() is float — imprecise)
+    total_ms = ((td.days * 86400 + td.seconds) * 1000
+                + td.microseconds // 1000)
+    if total_ms < 0:
         return "-" + to_reltime(-td)
-    hours, rem = divmod(total, 3600)
-    minutes, seconds = divmod(rem, 60)
-    return f"{hours}:{minutes:02d}:{seconds:02d}"
+    hours, rem = divmod(total_ms, 3_600_000)
+    minutes, rem = divmod(rem, 60_000)
+    seconds, ms = divmod(rem, 1000)
+    base = f"{hours}:{minutes:02d}:{seconds:02d}"
+    # whole seconds stay clean ("0:00:05"); non-zero ms append ".mmm"
+    # (e.g. PTA problem time limits: 100 ms → "0:00:00.100")
+    return f"{base}.{ms:03d}" if ms else base
 
 
 def parse_reltime(s: str) -> dt.timedelta:
@@ -38,10 +44,12 @@ def parse_reltime(s: str) -> dt.timedelta:
     parts = s.split(":")
     if len(parts) == 3:
         hours, minutes = int(parts[0]), int(parts[1])
-        seconds = int(float(parts[2]))
+        # float seconds: parse_reltime(to_reltime(td)) must round-trip
+        # millisecond values ("0:00:00.100" → 100 ms, not 0)
+        seconds = float(parts[2])
     else:
         hours = 0
         minutes = int(parts[0])
-        seconds = int(float(parts[1]))
+        seconds = float(parts[1])
     td = dt.timedelta(hours=hours, minutes=minutes, seconds=seconds)
     return -td if negative else td

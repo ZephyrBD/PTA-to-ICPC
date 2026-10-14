@@ -10,7 +10,10 @@ _STATIC_FIELDS = (
     ("contest", "contests"), ("state", "state"), ("groups", "groups"),
     ("organizations", "organizations"), ("teams", "teams"),
     ("problems", "problems"), ("languages", "languages"),
-    ("judgement_types", "judgement-types"),
+    ("judgement_types", "judgement-types"), ("runs", "runs"),
+    # ContestData.sources (submission_id → program text) is deliberately
+    # NOT here: the files route reads it directly from the snapshot and
+    # source code must never enter the event feed.
 )
 
 

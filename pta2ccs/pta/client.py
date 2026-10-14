@@ -62,6 +62,21 @@ MEMBERS_FILTER = (
     '"field":"STUDENT_NUMBER"}}'
 )
 MAX_MEMBERS_PAGES = 50
+MAX_PROBLEMS_PAGES = 50
+
+
+def _to_int(v) -> int | None:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(v) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class PtaAuthError(Exception):
@@ -84,8 +99,12 @@ class PtaClient:
                  page_limit: int = 50):
         self.submissions_url = (
             f"{base_url}/api/problem-sets/{contest_id}/submissions")
+        # per-submission detail (source code + per-case runs; findings §2)
+        self.submissions_api_url = f"{base_url}/api/submissions"
+        # full problems list with programmingProblemConfig limits
+        # (findings §3; replaces the labels-only problem-types endpoint)
         self.problems_url = (
-            f"{base_url}/api/problem-sets/{contest_id}/problem-types")
+            f"{base_url}/api/problem-sets/{contest_id}/problems")
         self.members_url = (
             f"{base_url}/api/problem-sets/{contest_id}/members")
         self.contest_meta_url = (
@@ -140,30 +159,47 @@ class PtaClient:
         return list(out.values())
 
     async def fetch_problems(self) -> list[dict]:
-        """Problem list from the labels endpoint the submissions UI uses.
+        """Full problems list from GET /problems (findings §3).
 
-        `id` is the PTA **label** (e.g. "1-3"), not the raw
-        `problemSetProblemId` — submissions normalize `problem_index` to the
-        label too, so both sides of `submissions[].problem_id` agree
-        (live smoke 2026-10-13: raw ids here vs labels on submissions left
-        every scoreboard cell at `num_judged: 0`). `ordinal` follows the
-        response order: `indexInProblemPool` is per-pool and was 1 for all
-        15 problems of the probed set (`problemPoolIndex` is the global
-        pool order but collides for multi-problem pools).
+        page/limit pagination like /members (loop while a page returns
+        exactly `limit` rows). `id` is the PTA **label** (e.g. "1-3"), not
+        the raw `problemSetProblemId` — submissions normalize
+        `problem_index` to the label too, so both sides of
+        `submissions[].problem_id` agree (live smoke 2026-10-13: raw ids
+        here vs labels on submissions left every scoreboard cell at
+        `num_judged: 0`). `ordinal` follows the response order.
+
+        Limits come from `problemConfig.programmingProblemConfig`:
+        timeLimit is MILLISECONDS (live 100–1000), memoryLimit and
+        codeSizeLimit are KB. Only label/title/limits are extracted —
+        the response also embeds content/description/solution/judgeConfig
+        (题面 + reference answer), which must NEVER be stored or returned.
         """
-        data = await self._get_json(self.problems_url)
-        labels = data.get("labels") if isinstance(data, dict) else data
+        rows: list[dict] = []
+        for page in range(MAX_PROBLEMS_PAGES):
+            params = {"page": page, "limit": self._page_limit,
+                      "problemType": "PROGRAMMING"}
+            data = await self._get_json(self.problems_url, params)
+            batch = data.get("problemSetProblems") or []
+            rows.extend(batch)
+            if len(batch) < self._page_limit:
+                break
         out: list[dict] = []
-        for i, p in enumerate(labels or []):
-            raw_id = str(p.get("id", i))
+        for i, p in enumerate(rows):
+            raw_id = str(p.get("problemId", p.get("id", i)))
             label = p.get("label")
             if label:
                 self._labels[raw_id] = str(label)
+            cfg = ((p.get("problemConfig") or {})
+                   .get("programmingProblemConfig") or {})
             out.append({
                 "id": str(label) if label else raw_id,
                 "label": label,
                 "title": p.get("title", ""),
                 "ordinal": i + 1,
+                "time_limit_ms": _to_int(cfg.get("timeLimit")),
+                "memory_limit_kb": _to_int(cfg.get("memoryLimit")),
+                "code_limit_kb": _to_int(cfg.get("codeSizeLimit")),
             })
         return out
 
@@ -204,6 +240,42 @@ class PtaClient:
             "compilers": [str(c) for c in (cfg.get("compilers") or [])],
             "scoreboardFreezeSeconds": freeze_s,
         }
+
+    async def fetch_submission_detail(self, sub_id: str) -> dict:
+        """Per-submission detail from GET /api/submissions/{id}
+        (findings §2). Returns only the safe subset: program (source),
+        compiler enum, and per-case run results. Never log the program or
+        the raw response — it also embeds stdout/stderr/checkerOutput
+        (privacy) and compilationResult.log (CE log deliberately
+        unexposed: no Contest API field for it)."""
+        data = await self._get_json(f"{self.submissions_api_url}/{sub_id}")
+        sub = data.get("submission") or {}
+        program: str | None = None
+        compiler: str | None = None
+        for detail in sub.get("submissionDetails") or []:
+            p = (detail or {}).get("programmingSubmissionDetail") or {}
+            if p.get("program") is not None:
+                program = p.get("program")
+            if p.get("compiler"):
+                compiler = str(p["compiler"])
+        run_results: list[dict] = []
+        for jrc in sub.get("judgeResponseContents") or []:
+            # cases live under the programming-specific wrapper
+            content = (jrc or {}).get("programmingJudgeResponseContent") or {}
+            cases = content.get("testcaseJudgeResults") or {}
+            if not isinstance(cases, dict):
+                continue
+            for case_key, r in cases.items():
+                r = r or {}
+                run_results.append({
+                    "case": str(case_key),
+                    "result": r.get("result"),
+                    "time": _to_float(r.get("time")),
+                    "memory": _to_int(r.get("memory")),
+                    "exitcode": _to_int(r.get("exitcode")),
+                })
+        return {"program": program, "compiler": compiler,
+                "run_results": run_results}
 
     async def fetch_teams(self) -> list[dict]:
         """Full roster from the /members endpoint (findings §4).
@@ -319,4 +391,8 @@ class PtaClient:
             "team_name": team_name,
             "problem_index": self._resolve_problem_index(row, data),
             "language": COMPILER_LANGUAGES.get(compiler, compiler or "unknown"),
+            # list rows carry time (seconds float) and score (float);
+            # None when absent or non-numeric (pending/judging rows)
+            "run_time": _to_float(row.get("time")),
+            "score": _to_float(row.get("score")),
         }

@@ -62,6 +62,10 @@ def fetch_contest_meta(client: PtaClient) -> dict:
     return asyncio.run(_run(client, client.fetch_contest_meta()))
 
 
+def fetch_submission_detail(client: PtaClient, sub_id: str) -> dict:
+    return asyncio.run(_run(client, client.fetch_submission_detail(sub_id)))
+
+
 def expected_team(payload: dict, row: dict) -> tuple[str, str]:
     member = payload["examMemberByUserId"][row["userId"]]
     stu = payload["studentUserById"][member["studentUserId"]]
@@ -104,6 +108,13 @@ def test_fetch_submissions_normalizes_rows():
         payload["problemSetProblemById"][raw_first["problemSetProblemId"]]["label"]
     assert first["problem_index"] == "1-1"
     assert first["language"] == "C++ (g++)"  # GXX compiler table
+    # list rows carry run time (seconds float) and score (float)
+    assert first["run_time"] == 0.003
+    assert first["score"] == 5.0
+    ce_row = next(r for r in rows
+                  if r["id"] == "2109955327070257152")  # COMPILE_ERROR
+    assert ce_row["run_time"] == 0.0
+    assert ce_row["score"] == 0.0
 
 
 def test_fetch_submissions_cursor_pagination():
@@ -170,22 +181,93 @@ def test_cookie_never_logged(caplog):
     assert COOKIE not in caplog.text
 
 
-def test_fetch_problems_from_labels_endpoint():
-    payload = load("problems.json")
+def test_fetch_problems_from_list_endpoint_with_limits():
+    payload = load("problems_full.json")
+    rows = payload["problemSetProblems"]
+    # 2-page mock: page 0 returns exactly `limit` rows → page 1 requested
+    page_size = 2
+    calls: list[tuple[str | None, str | None]] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == f"/api/problem-sets/{CONTEST_ID}/problem-types"
+        assert request.url.path == f"/api/problem-sets/{CONTEST_ID}/problems"
+        assert request.url.params.get("problemType") == "PROGRAMMING"
+        page, limit = request.url.params.get("page"), request.url.params.get("limit")
+        calls.append((page, limit))
+        start = int(page) * page_size
+        return httpx.Response(200, json=dict(
+            payload, problemSetProblems=rows[start:start + page_size]))
+
+    problems = fetch_problems(make_client(handle, page_limit=page_size))
+    assert calls == [("0", "2"), ("1", "2")]  # stop when page is short
+    assert [p["id"] for p in problems] == ["1-1", "1-2", "1-3"]
+    assert [p["label"] for p in problems] == ["1-1", "1-2", "1-3"]
+    assert [p["ordinal"] for p in problems] == [1, 2, 3]
+    assert problems[0]["time_limit_ms"] == 1000   # milliseconds
+    assert problems[0]["memory_limit_kb"] == 128000  # KB
+    assert problems[0]["code_limit_kb"] == 64
+    assert problems[1]["time_limit_ms"] == 100    # live minimum
+    assert problems[2]["time_limit_ms"] is None   # no problemConfig
+    assert problems[2]["memory_limit_kb"] is None
+    assert problems[2]["code_limit_kb"] is None
+    # dangerous fields must never appear in the normalized output
+    dump = json.dumps(problems, ensure_ascii=False)
+    for banned in ("content", "description", "solution", "judgeConfig",
+                   "exampleTestDatas", "cases", "answer"):
+        assert f'"{banned}"' not in dump
+
+
+def test_fetch_problems_updates_label_map():
+    """raw problemId → label mapping must survive so submissions'
+    _resolve_problem_index fallback keeps working."""
+    payload = load("problems_full.json")
+
+    def handle(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payload)
 
-    problems = fetch_problems(make_client(handle))
-    assert len(problems) == len(payload["labels"])
-    # id is the PTA label, not the raw problemSetProblemId: submissions'
-    # problem_index resolves to the label, so both must agree.
-    assert [p["id"] for p in problems] == [l["label"] for l in payload["labels"]]
-    assert problems[0]["label"] == payload["labels"][0]["label"] == "1-1"
-    assert all("title" in p and p["id"] for p in problems)
-    assert [p["ordinal"] for p in problems] == list(
-        range(1, len(payload["labels"]) + 1))
+    client = make_client(handle)
+    try:
+        asyncio.run(client.fetch_problems())
+        assert client._labels["2109924519349395456"] == "1-1"
+        assert client._labels["2109924519349395457"] == "1-2"
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_fetch_submission_detail():
+    payload = load("submission_detail.json")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/submissions/2109975546404745216"
+        return httpx.Response(200, json=payload)
+
+    detail = fetch_submission_detail(make_client(handle),
+                                     "2109975546404745216")
+    assert detail["program"].startswith("#include <iostream>")
+    assert detail["compiler"] == "GXX"
+    cases = {r["case"]: r for r in detail["run_results"]}
+    assert set(cases) == {"1", "data00"}
+    assert cases["1"]["result"] == "ACCEPTED"
+    assert cases["1"]["time"] == 0.003
+    assert cases["1"]["memory"] == 598016
+    assert cases["1"]["exitcode"] == 0
+    assert cases["data00"]["result"] == "SKIPPED"  # pending-ish cases kept
+    assert cases["data00"]["time"] is None
+    # privacy/CE-log policy: stdout/stderr/checkerOutput/error/log never
+    # appear in the normalized output
+    dump = json.dumps(detail, ensure_ascii=False)
+    for banned in ("stdout", "stderr", "checkerOutput", '"error"', '"log"',
+                   "fake compiler log"):
+        assert banned not in dump
+
+
+def test_fetch_submission_detail_defensive_shapes():
+    """No submissionDetails / no judgeResponseContents → Nones/empties."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"submission": {"id": "x"}})
+
+    detail = fetch_submission_detail(make_client(handle), "x")
+    assert detail == {"program": None, "compiler": None, "run_results": []}
 
 
 def test_fetch_contest_meta():
@@ -471,10 +553,14 @@ def test_problem_ids_agree_with_submission_problem_index():
     labels on submissions → scoreboard cells all `num_judged: 0`.
     """
     subs_payload = load("submissions_page1.json")
-    probs_payload = load("problems.json")
+    # problems rows built from the submissions' embedded label map so the
+    # two sides of problem_id agree by construction
+    probs_payload = {"total": 1, "problemSetProblems": [
+        {"problemId": pid, "label": info["label"], "title": ""}
+        for pid, info in subs_payload["problemSetProblemById"].items()]}
 
     def handle(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/problem-types"):
+        if request.url.path.endswith("/problems"):
             return httpx.Response(200, json=probs_payload)
         return httpx.Response(200, json=subs_payload)
 
@@ -487,13 +573,14 @@ def test_problem_ids_agree_with_submission_problem_index():
 
     problems, rows = asyncio.run(both(make_client(handle)))
     ids = {p["id"] for p in problems}
-    assert ids == {l["label"] for l in probs_payload["labels"]}
+    assert ids == {i["label"] for i in subs_payload["problemSetProblemById"].values()}
     used = {r["problem_index"] for r in rows}
     assert used and used <= ids
 
 
 def test_missing_label_falls_back_to_raw_problem_id_on_both_sides():
-    probs_payload = {"labels": [{"id": "424242", "title": "T"}]}
+    probs_payload = {"total": 1, "problemSetProblems": [
+        {"problemId": "424242", "title": "T"}]}
     subs_payload = {
         "submissions": [{
             "id": "9", "userId": "u1", "problemSetProblemId": "424242",
@@ -507,7 +594,7 @@ def test_missing_label_falls_back_to_raw_problem_id_on_both_sides():
     }
 
     def handle(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/problem-types"):
+        if request.url.path.endswith("/problems"):
             return httpx.Response(200, json=probs_payload)
         return httpx.Response(200, json=subs_payload)
 

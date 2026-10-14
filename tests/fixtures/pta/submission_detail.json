@@ -1,0 +1,74 @@
+{
+ "submission": {
+  "id": "2109975546404745216",
+  "userId": "1977698364215054336",
+  "problemType": "PROGRAMMING",
+  "problemSetProblemId": "2109924519349395456",
+  "submitAt": "2026-10-13T11:52:26Z",
+  "status": "ACCEPTED",
+  "score": 5.0,
+  "compiler": "GXX",
+  "time": 0.003,
+  "memory": 598016,
+  "submissionDetails": [
+   {
+    "programmingSubmissionDetail": {
+     "compiler": "GXX",
+     "program": "#include <iostream>\n\nint main() {\n  int a, b;\n  std::cin >> a >> b;\n  std::cout << a + b << '\\n';\n  return 0;\n}\n"
+    }
+   }
+  ],
+  "judgeResponseContents": [
+   {
+    "programmingJudgeResponseContent": {
+     "compilationResult": {
+      "log": "example compiler log (redacted)",
+      "success": true,
+      "error": null
+     },
+     "testcaseJudgeResults": {
+      "1": {
+       "result": "ACCEPTED",
+       "exceed": null,
+       "time": 0.003,
+       "memory": 598016,
+       "exitcode": 0,
+       "termsig": 0,
+       "error": null,
+       "stdout": "example compiler log (redacted)",
+       "stderr": "",
+       "checkerOutput": null,
+       "testcaseScore": 5.0,
+       "stdoutTruncated": false,
+       "stderrTruncated": false,
+       "showOutput": true
+      },
+      "data00": {
+       "result": "SKIPPED",
+       "exceed": null,
+       "time": null,
+       "memory": null,
+       "exitcode": null,
+       "termsig": 0,
+       "error": null,
+       "stdout": null,
+       "stderr": null,
+       "checkerOutput": null,
+       "testcaseScore": 0.0,
+       "stdoutTruncated": false,
+       "stderrTruncated": false,
+       "showOutput": false
+      }
+     }
+    }
+   }
+  ]
+ },
+ "cause": null,
+ "hints": null,
+ "queued": false,
+ "examMember": null,
+ "studentUser": null,
+ "user": null,
+ "publicCases": null
+}

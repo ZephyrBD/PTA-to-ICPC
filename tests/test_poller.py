@@ -29,6 +29,10 @@ class FakeClient:
             "compilers": ["GXX", "JAVAC"], "scoreboardFreezeSeconds": 90000,
         }
         self.meta_calls = 0
+        # per-submission detail (task 13): call counter + failure set
+        self.detail_calls: list[str] = []
+        self.detail_fail_ids: set[str] = set()
+        self.detail_program = "int main(){}"
 
     async def fetch_submissions(self):
         return list(self.subs)
@@ -43,6 +47,14 @@ class FakeClient:
     async def fetch_contest_meta(self):
         self.meta_calls += 1
         return dict(self.meta)
+
+    async def fetch_submission_detail(self, sub_id: str):
+        self.detail_calls.append(sub_id)
+        if sub_id in self.detail_fail_ids:
+            raise RuntimeError(f"detail boom {sub_id}")
+        return {"program": self.detail_program, "compiler": "GXX",
+                "run_results": [{"case": "1", "result": "ACCEPTED",
+                                 "time": 0.003, "memory": 2048, "exitcode": 0}]}
 
 
 def make_poller(config_poll_seconds: float = 0.01) -> tuple[Poller, FakeClient, Store]:
@@ -152,3 +164,103 @@ def test_contest_meta_fetched_once_and_freeze_reaches_snapshot():
     snap = store.snapshot()
     assert snap.contest["scoreboard_freeze_duration"] == "25:00:00"
     assert snap.state["frozen"] is not None
+
+
+# --- per-submission detail fetch (task 13) --------------------------------
+
+def sub_row(sid: str, status: str = "答案正确") -> dict:
+    return {"id": sid, "submit_time": "2023/05/21 09:10:00", "status": status,
+            "team_id": "D22", "team_name": "队", "problem_index": "A",
+            "language": "cpp"}
+
+
+def test_detail_first_round_fetches_all():
+    poller, client, store = make_poller()
+    client.subs = [sub_row("1"), sub_row("2"), sub_row("3")]
+    asyncio.run(poller.poll_once())
+    assert sorted(client.detail_calls) == ["1", "2", "3"]
+    snap = store.snapshot()
+    assert snap.sources["1"] == "int main(){}"
+    assert snap.submissions["1"]["files"][0]["filename"] == "main.cpp"
+    assert "1-1" in snap.runs
+
+
+def test_detail_second_round_same_status_no_refetch():
+    poller, client, store = make_poller()
+    client.subs = [sub_row("1")]
+    asyncio.run(poller.poll_once())
+    assert client.detail_calls == ["1"]
+    asyncio.run(poller.poll_once())  # same status
+    assert client.detail_calls == ["1"]  # no new call
+    # cached detail is re-attached to the fresh row dicts → snapshot keeps
+    # files/runs/sources between fetches
+    snap = store.snapshot()
+    assert snap.sources["1"] == "int main(){}"
+    assert snap.submissions["1"]["files"]
+    assert "1-1" in snap.runs
+
+
+def test_detail_status_change_triggers_refetch():
+    poller, client, store = make_poller()
+    client.subs = [sub_row("1", "正在评测")]
+    asyncio.run(poller.poll_once())
+    client.subs = [sub_row("1", "答案正确")]  # status flipped
+    asyncio.run(poller.poll_once())
+    assert client.detail_calls == ["1", "1"]
+
+
+def test_detail_per_id_failure_retries_next_round(caplog):
+    poller, client, store = make_poller()
+    client.subs = [sub_row("1"), sub_row("2")]
+    client.detail_fail_ids = {"2"}
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+        asyncio.run(poller.poll_once())
+    snap = store.snapshot()
+    # failure doesn't kill the cycle: both submissions present, only the
+    # successful one has detail
+    assert {"1", "2"} <= set(snap.submissions)
+    assert "1" in snap.sources
+    assert "2" not in snap.sources
+    assert any("detail fetch failed" in rec.message and "2" in rec.message
+               for rec in caplog.records)
+    # retry next round (id only in the log — no program text leaked)
+    assert "int main(){}" not in caplog.text
+    client.detail_fail_ids = set()
+    asyncio.run(poller.poll_once())
+    assert client.detail_calls == ["1", "2", "2"]  # 2 retried
+    assert "2" in store.snapshot().sources
+
+
+def test_detail_fetch_capped_per_round(monkeypatch):
+    from pta2ccs import poller as poller_mod
+    monkeypatch.setattr(poller_mod, "DETAIL_FETCH_LIMIT", 2)
+    poller, client, store = make_poller()
+    client.subs = [sub_row(str(i)) for i in range(5)]
+    asyncio.run(poller.poll_once())
+    assert len(client.detail_calls) == 2  # capped
+    asyncio.run(poller.poll_once())
+    assert len(client.detail_calls) == 4  # next 2 of the backlog
+    asyncio.run(poller.poll_once())
+    assert len(client.detail_calls) == 5  # drain complete
+    asyncio.run(poller.poll_once())
+    assert len(client.detail_calls) == 5  # nothing left
+
+
+def test_non_config_rounds_keep_problem_limits():
+    # config_poll_seconds=60 → only the first round is need_config; the
+    # snapshot-rebuilt raw_problems on later rounds must carry the limits
+    # through (time_limit round-trips reltime → ms).
+    poller, client, store = make_poller(config_poll_seconds=60.0)
+    client.problems = [{"id": "A", "title": "题A", "time_limit_ms": 100,
+                        "memory_limit_kb": 256000, "code_limit_kb": 64}]
+    asyncio.run(poller.poll_once())
+    snap = store.snapshot()
+    assert snap.problems["A"]["time_limit"] == "0:00:00.100"
+    assert snap.problems["A"]["memory_limit"] == 256000
+    assert snap.problems["A"]["code_limit"] == 64
+    for _ in range(2):  # non-config rounds rebuild from the snapshot
+        asyncio.run(poller.poll_once())
+    snap = store.snapshot()
+    assert snap.problems["A"]["time_limit"] == "0:00:00.100"
+    assert snap.problems["A"]["memory_limit"] == 256000
+    assert snap.problems["A"]["code_limit"] == 64

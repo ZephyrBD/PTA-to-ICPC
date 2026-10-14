@@ -38,10 +38,26 @@ def test_to_reltime():
     assert to_reltime(dt.timedelta(seconds=75)) == "0:01:15"
 
 
+def test_to_reltime_preserves_milliseconds():
+    # whole seconds stay clean; non-zero ms append ".mmm" (PTA problem
+    # time limits are in ms: 100 → "0:00:00.100")
+    assert to_reltime(dt.timedelta(milliseconds=100)) == "0:00:00.100"
+    assert to_reltime(dt.timedelta(milliseconds=1500)) == "0:00:01.500"
+    assert to_reltime(dt.timedelta(seconds=5)) == "0:00:05"  # no ".000"
+    assert to_reltime(dt.timedelta(milliseconds=-100)) == "-0:00:00.100"
+
+
 def test_parse_reltime():
     assert parse_reltime("0:20:00") == dt.timedelta(minutes=20)
     assert parse_reltime("5:00:00") == dt.timedelta(hours=5)
     assert parse_reltime("26:00:01") == dt.timedelta(hours=26, seconds=1)
+
+
+def test_parse_reltime_milliseconds():
+    # must round-trip to_reltime's ms form (int(float()) would floor to 0)
+    assert parse_reltime("0:00:00.100") == dt.timedelta(milliseconds=100)
+    assert parse_reltime("0:00:00.100").total_seconds() == pytest.approx(0.1)
+    assert parse_reltime("0:00:01.500") == dt.timedelta(seconds=1, milliseconds=500)
 
 
 def test_sanitize_id_keeps_valid():
@@ -72,8 +88,8 @@ def test_access_lists_expected_endpoints():
     types = {e["type"] for e in acc["endpoints"]}
     assert types == {
         "contests", "state", "groups", "organizations", "teams", "problems",
-        "languages", "judgement-types", "submissions", "judgements", "scoreboard",
-        "event-feed",
+        "languages", "judgement-types", "submissions", "judgements", "runs",
+        "scoreboard", "event-feed",
     }
     assert acc["capabilities"] == []
     for e in acc["endpoints"]:
