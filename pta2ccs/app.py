@@ -180,7 +180,8 @@ def _make_poller(settings: Settings, manual: dict, store: Store) -> tuple[Poller
     wall clock (client default is +08:00)."""
     tz = ((manual.get("contest") or {}).get("pta_timezone", "+08:00"))
     client = PtaClient("https://pintia.cn", settings.contest_id,
-                       settings.pta_cookie, tz=tz)
+                       settings.pta_cookie, tz=tz,
+                       requests_per_second=settings.pta_requests_per_second)
     return Poller(client, store, settings, manual), tz
 
 

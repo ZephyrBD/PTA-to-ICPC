@@ -1,3 +1,4 @@
+import asyncio
 import datetime as dt
 
 from fastapi.testclient import TestClient
@@ -235,3 +236,39 @@ def test_lifespan_tolerates_client_without_aclose():
     app, client = _make_lifespan_app(closable=False)
     with TestClient(app):
         pass  # shutdown must not raise AttributeError on missing aclose
+
+
+# --- rate limiting surface (task 14) ---------------------------------------
+
+class _StubPoller:
+    """Minimal poller stand-in for /healthz spread testing (no PTA I/O)."""
+
+    def __init__(self):
+        self.status = {"ready": False, "last_success": None, "cookie_ok": True,
+                       "consecutive_failures": 0,
+                       "rate_limited_until": "2026-10-14T12:00:00+00:00"}
+        self._stop = False
+
+    async def run(self):
+        while not self._stop:
+            await asyncio.sleep(0.01)
+
+    def stop(self):
+        self._stop = True
+
+
+def test_healthz_spreads_poller_rate_limited_until():
+    # healthz spreads poller.status, so rate_limited_until appears with
+    # no healthz-specific code (task 14)
+    with TestClient(create_app(Store(), poller=_StubPoller(),
+                               contest_id="c1")) as c:
+        r = c.get("/healthz")
+    assert r.status_code == 200
+    assert r.json()["rate_limited_until"] == "2026-10-14T12:00:00+00:00"
+
+
+def test_default_poller_client_gets_rate_limit_settings():
+    settings = Settings(contest_id="c1", pta_cookie="cookie",
+                        pta_requests_per_second=5.0)
+    poller, _tz = _make_poller(settings, {"contest": {}}, Store())
+    assert poller.client._min_interval == 1.0 / 5.0

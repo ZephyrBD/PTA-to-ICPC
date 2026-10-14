@@ -13,6 +13,13 @@ class Settings(BaseModel):
     config_poll_seconds: float = Field(default=60.0, gt=0)
     host: str = "127.0.0.1"
     port: int = 8000
+    # PTA rate limiting (task 14; live 429 storm 2026-10-14): global
+    # request spacing on the PTA client + per-round detail budget.
+    # detail_fetch_per_round ge=0 (0 = escape hatch: no detail fetches);
+    # fetch_details false is a second, coarser escape hatch.
+    pta_requests_per_second: float = Field(default=2.0, gt=0)
+    detail_fetch_per_round: int = Field(default=5, ge=0)
+    fetch_details: bool = True
 
 
 def _fail(msg: str) -> None:

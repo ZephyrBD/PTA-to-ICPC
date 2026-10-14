@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
+import time
 
 import httpx
 
@@ -83,6 +85,30 @@ class PtaAuthError(Exception):
     pass
 
 
+class PtaRateLimitError(Exception):
+    """HTTP 429 from PTA; poller backs off `retry_after` seconds.
+
+    Live-observed 2026-10-14: a restart burst (~50 detail requests in <2 s)
+    triggered a 429 storm on /api/submissions/{id} and /problems. The
+    client never auto-retries — the poller owns the backoff decision.
+    """
+
+    def __init__(self, message: str = "PTA rate limited",
+                 *, retry_after: float = 5.0):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(value: str | None) -> float:
+    """Retry-After header (seconds) → float, clamped to [1.0, 60.0];
+    missing/invalid → 5.0."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return 5.0
+    return min(60.0, max(1.0, seconds))
+
+
 class PtaClient:
     """Async client for the pintia.cn internal API (docs/pta-api-findings.md).
 
@@ -96,7 +122,8 @@ class PtaClient:
     def __init__(self, base_url: str, contest_id: str, cookie: str, *,
                  tz: str = "+08:00",
                  transport: httpx.AsyncBaseTransport | None = None,
-                 page_limit: int = 50):
+                 page_limit: int = 50,
+                 requests_per_second: float = 2.0):
         self.submissions_url = (
             f"{base_url}/api/problem-sets/{contest_id}/submissions")
         # per-submission detail (source code + per-case runs; findings §2)
@@ -111,6 +138,16 @@ class PtaClient:
             f"{base_url}/api/problem-sets/{contest_id}")
         self._tz = tz
         self._page_limit = page_limit
+        # Global rate gate: every HTTP request (list pages, details, config)
+        # passes through; minimum spacing = 1/rps via monotonic clock under
+        # an asyncio.Lock (concurrency is serialized at the gate, so e.g.
+        # 2 concurrent detail fetches are still 0.5 s apart at 2 rps).
+        # Steady-state budget ≪ cap: list ~0.6 rps + details ≤1 rps
+        # (detail_fetch_per_round=5, DETAIL_CONCURRENCY=2) + config
+        # negligible — all well under the default 2.0 rps cap (task 14).
+        self._min_interval = 1.0 / requests_per_second
+        self._gate_lock = asyncio.Lock()
+        self._next_request_at = 0.0  # time.monotonic()
         # problemSetProblemId → label; refreshed by fetch_problems and by
         # every submissions response (embedded problemSetProblemById map).
         self._labels: dict[str, str] = {}
@@ -124,8 +161,26 @@ class PtaClient:
             headers=self._headers, timeout=10.0, follow_redirects=True,
             transport=transport)
 
+    async def _rate_gate(self) -> None:
+        """Wait until 1/rps seconds since the previous request started.
+
+        Serialized under a lock so concurrent callers are spaced, not
+        batched (concurrency 4 still fires one request every interval).
+        """
+        async with self._gate_lock:
+            now = time.monotonic()
+            wait = self._next_request_at - now
+            if wait > 0:
+                await asyncio.sleep(wait)
+                now = time.monotonic()
+            self._next_request_at = now + self._min_interval
+
     async def _get_json(self, url: str, params: dict | None = None) -> dict:
+        await self._rate_gate()
         resp = await self._client.get(url, params=params)
+        if resp.status_code == 429:
+            raise PtaRateLimitError(
+                retry_after=_parse_retry_after(resp.headers.get("Retry-After")))
         if resp.status_code in (401, 403):
             raise PtaAuthError(f"PTA rejected request: HTTP {resp.status_code}")
         resp.raise_for_status()

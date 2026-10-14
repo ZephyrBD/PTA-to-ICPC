@@ -3,20 +3,20 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import time
 
 from .config import Settings
-from .pta.client import PtaAuthError, PtaClient
+from .pta.client import PtaAuthError, PtaClient, PtaRateLimitError
 from .store import Store
 from .timefmt import parse_reltime
 from .translate import translate
 
 log = logging.getLogger(__name__)
 
-# per-submission detail (source + runs) budget per poll round; no
-# persistence by design — first poll after restart fetches everything
-# again (capped here so a large backlog cannot stall the cycle)
-DETAIL_FETCH_LIMIT = 50
-DETAIL_CONCURRENCY = 4
+# per-submission detail fetch concurrency; the per-round budget comes from
+# settings.detail_fetch_per_round (task 14 — default 5, was a 50/round
+# module constant that triggered PTA's 429 rate limiting on restart)
+DETAIL_CONCURRENCY = 2
 
 
 def _now() -> dt.datetime:
@@ -43,9 +43,14 @@ class Poller:
         self.manual = manual
         self.status: dict = {
             "ready": False, "last_success": None, "cookie_ok": True,
-            "consecutive_failures": 0,
+            "consecutive_failures": 0, "rate_limited_until": None,
         }
         self._stop = asyncio.Event()
+        # monotonic deadline until which ALL PTA requests are skipped
+        # (set on any 429: list/config rounds re-raise, detail rounds
+        # swallow and push it forward); healthz shows the ISO form via
+        # status["rate_limited_until"]
+        self._rate_limit_until: float | None = None
         self._last_config_poll = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
         # last successful roster; re-passed to translate() on every
         # non-config round so zero-submission teams don't vanish (and
@@ -65,20 +70,36 @@ class Poller:
         # runs/files/sources would vanish from the rebuilt snapshot.
         self._detail_cache: dict[str, dict] = {}
 
+    def _set_rate_limit(self, retry_after: float) -> None:
+        """Start a no-requests cooldown of `retry_after` seconds (task 14)."""
+        self._rate_limit_until = time.monotonic() + retry_after
+        self.status["rate_limited_until"] = (
+            dt.datetime.now(dt.timezone.utc)
+            + dt.timedelta(seconds=retry_after)).isoformat()
+
     async def _fetch_details(self, raw_subs: list[dict]) -> None:
         """Attach source/run detail onto rows. Fetch (at most
-        DETAIL_FETCH_LIMIT per round, DETAIL_CONCURRENCY in flight) only
-        for ids whose status is new or changed since the last successful
-        fetch; then re-attach the cached payload for every row whose
-        cached status still matches. A per-id failure logs the id only,
-        leaves the stale cache unattached (status mismatch) and retries
-        next round; it never fails the whole poll cycle."""
+        settings.detail_fetch_per_round per round, DETAIL_CONCURRENCY in
+        flight) only for ids whose status is new or changed since the last
+        successful fetch; then re-attach the cached payload for every row
+        whose cached status still matches. A per-id non-429 failure logs
+        the id only, leaves the stale cache unattached (status mismatch)
+        and retries next round; it never fails the whole poll cycle.
+
+        A detail 429 is swallowed here (after pushing the poller-wide
+        cooldown forward): the submissions list already succeeded — the
+        real-time scoreboard must not die because details got throttled.
+        """
         by_id = {str(row["id"]): row for row in raw_subs}
-        needed = [
-            (sid, row.get("status"))
-            for sid, row in by_id.items()
-            if self._detail_status.get(sid) != row.get("status")
-        ][:DETAIL_FETCH_LIMIT]
+        budget = self.settings.detail_fetch_per_round
+        if not self.settings.fetch_details or budget <= 0:
+            needed: list[tuple[str, str | None]] = []
+        else:
+            needed = [
+                (sid, row.get("status"))
+                for sid, row in by_id.items()
+                if self._detail_status.get(sid) != row.get("status")
+            ][:budget]
         if needed:
             sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
 
@@ -86,6 +107,8 @@ class Poller:
                 async with sem:
                     try:
                         detail = await self.client.fetch_submission_detail(sid)
+                    except PtaRateLimitError:
+                        raise  # poller-wide backoff, not a per-id failure
                     except Exception as e:
                         # id only — never the program or raw response
                         log.warning("detail fetch failed for %s: %s", sid, e)
@@ -97,7 +120,25 @@ class Poller:
                 }
                 self._detail_status[sid] = status
 
-            await asyncio.gather(*(one(sid, status) for sid, status in needed))
+            # FIRST_EXCEPTION: the only exception `one` lets escape is
+            # PtaRateLimitError — cancel the remaining in-flight fetches
+            # as soon as one 429s instead of hammering a throttled PTA
+            tasks = [asyncio.create_task(one(sid, status))
+                     for sid, status in needed]
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_EXCEPTION)
+            for t in pending:
+                t.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            for t in done:
+                exc = t.exception()
+                if isinstance(exc, PtaRateLimitError):
+                    self._set_rate_limit(exc.retry_after)
+                    log.warning(
+                        "detail fetch paused: rate limited, "
+                        "retry_after=%.1fs", exc.retry_after)
+                    break
         for sid, row in by_id.items():
             cached = self._detail_cache.get(sid)
             if (cached is None
@@ -109,6 +150,12 @@ class Poller:
             row["detail_fetched"] = True
 
     async def poll_once(self) -> None:
+        now = time.monotonic()
+        if self._rate_limit_until is not None and now < self._rate_limit_until:
+            # cooldown from a previous 429: zero PTA requests this round
+            log.debug("poll skipped: rate limited, %.1fs left",
+                      self._rate_limit_until - now)
+            return
         try:
             raw_subs = await self.client.fetch_submissions()
             await self._fetch_details(raw_subs)
@@ -158,6 +205,18 @@ class Poller:
             self.status["cookie_ok"] = True
             self.status["consecutive_failures"] = 0
             self.status["last_success"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            # clear an EXPIRED cooldown (a detail 429 may have set one
+            # mid-round — never clear an active one here)
+            if (self._rate_limit_until is not None
+                    and time.monotonic() >= self._rate_limit_until):
+                self._rate_limit_until = None
+                self.status["rate_limited_until"] = None
+        except PtaRateLimitError as e:
+            # rate limiting is NOT a failure: no backoff multiplication,
+            # consecutive_failures/last_success untouched; next round is
+            # skipped until the cooldown expires
+            self._set_rate_limit(e.retry_after)
+            log.warning("poll rate limited; sleeping %.1fs", e.retry_after)
         except PtaAuthError as e:
             self.status["cookie_ok"] = False
             self.status["consecutive_failures"] += 1
@@ -173,6 +232,10 @@ class Poller:
             failures = self.status["consecutive_failures"]
             delay = min(self.settings.poll_interval_seconds * (2 ** min(failures, 5)),
                         60.0)
+            if self._rate_limit_until is not None:
+                # wait out an active/pending rate-limit cooldown (min 1s)
+                delay = max(delay, self._rate_limit_until - time.monotonic(),
+                            1.0)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
             except TimeoutError:

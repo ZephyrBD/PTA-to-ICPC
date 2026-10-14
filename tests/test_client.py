@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -12,6 +13,7 @@ from pta2ccs.pta.client import (
     COMPILER_LANGUAGES,
     PtaAuthError,
     PtaClient,
+    PtaRateLimitError,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "pta"
@@ -35,6 +37,8 @@ def load_members() -> dict:
 
 
 def make_client(handler, **kwargs) -> PtaClient:
+    # tests must not be slowed by the production rate gate (task 14)
+    kwargs.setdefault("requests_per_second", 1000.0)
     return PtaClient(BASE_URL, CONTEST_ID, COOKIE,
                      transport=httpx.MockTransport(handler), **kwargs)
 
@@ -608,3 +612,95 @@ def test_missing_label_falls_back_to_raw_problem_id_on_both_sides():
     problems, rows = asyncio.run(both(make_client(handle)))
     assert problems[0]["id"] == "424242"
     assert rows[0]["problem_index"] == "424242"
+
+
+# --- rate limiting (task 14: live-observed 429 storm 2026-10-14) ----------
+
+def _handle_429(retry_after: str | None) -> object:
+    def handle(request: httpx.Request) -> httpx.Response:
+        headers = {} if retry_after is None else {"Retry-After": retry_after}
+        return httpx.Response(429, headers=headers, json={"message": "busy"})
+    return handle
+
+
+def test_429_raises_rate_limit_error_with_retry_after():
+    client = make_client(_handle_429("7"))
+    try:
+        with pytest.raises(PtaRateLimitError) as excinfo:
+            asyncio.run(client.fetch_submissions())
+        assert excinfo.value.retry_after == 7.0
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_429_retry_after_clamped_to_60():
+    client = make_client(_handle_429("999"))
+    try:
+        with pytest.raises(PtaRateLimitError) as excinfo:
+            asyncio.run(client.fetch_submissions())
+        assert excinfo.value.retry_after == 60.0
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_429_missing_retry_after_defaults_to_5():
+    client = make_client(_handle_429(None))
+    try:
+        with pytest.raises(PtaRateLimitError) as excinfo:
+            asyncio.run(client.fetch_submissions())
+        assert excinfo.value.retry_after == 5.0
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_429_invalid_retry_after_defaults_to_5():
+    client = make_client(_handle_429("soon"))
+    try:
+        with pytest.raises(PtaRateLimitError) as excinfo:
+            asyncio.run(client.fetch_submissions())
+        assert excinfo.value.retry_after == 5.0
+    finally:
+        asyncio.run(client.aclose())
+
+
+def _ok_subs_handler(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"submissions": [], "hasBefore": False})
+
+
+def test_rate_gate_spaces_sequential_requests():
+    # requests_per_second=10 → 0.1 s minimum spacing between requests
+    client = PtaClient(BASE_URL, CONTEST_ID, COOKIE,
+                       transport=httpx.MockTransport(_ok_subs_handler),
+                       requests_per_second=10)
+
+    async def go() -> float:
+        try:
+            t0 = time.monotonic()
+            await client.fetch_submissions()
+            await client.fetch_submissions()
+            return time.monotonic() - t0
+        finally:
+            await client.aclose()
+
+    elapsed = asyncio.run(go())
+    assert elapsed >= 0.09  # one 0.1 s gap between the two requests
+
+
+def test_rate_gate_serializes_concurrent_callers():
+    # requests_per_second=20 → 0.05 s spacing; 3 concurrent callers must
+    # still be spaced (gate serializes acquisition), ~0.1 s total
+    client = PtaClient(BASE_URL, CONTEST_ID, COOKIE,
+                       transport=httpx.MockTransport(_ok_subs_handler),
+                       requests_per_second=20)
+
+    async def go() -> float:
+        try:
+            t0 = time.monotonic()
+            await asyncio.gather(*(client.fetch_submissions()
+                                   for _ in range(3)))
+            return time.monotonic() - t0
+        finally:
+            await client.aclose()
+
+    elapsed = asyncio.run(go())
+    assert elapsed >= 0.09  # 2 gaps of 0.05 s

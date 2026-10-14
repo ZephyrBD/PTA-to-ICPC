@@ -2,8 +2,9 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from pta2ccs.config import load_manual, load_settings
+from pta2ccs.config import Settings, load_manual, load_settings
 
 
 def make_cfg(tmp_path: Path, **overrides) -> Path:
@@ -36,6 +37,32 @@ def test_load_settings_missing_key_fails(tmp_path: Path):
     with pytest.raises(SystemExit) as excinfo:
         load_settings(p)
     assert excinfo.value.code == 1
+
+
+# --- rate-limit settings (task 14) ----------------------------------------
+
+def test_rate_limit_settings_defaults():
+    s = Settings(contest_id="1", pta_cookie="c")
+    assert s.pta_requests_per_second == 2.0
+    assert s.detail_fetch_per_round == 5
+    assert s.fetch_details is True
+
+
+def test_rate_limit_settings_from_file(tmp_path: Path):
+    s = load_settings(make_cfg(
+        tmp_path, pta_requests_per_second=5.0, detail_fetch_per_round=10,
+        fetch_details=False))
+    assert s.pta_requests_per_second == 5.0
+    assert s.detail_fetch_per_round == 10
+    assert s.fetch_details is False
+
+
+@pytest.mark.parametrize("bad", [{"pta_requests_per_second": 0},
+                                 {"pta_requests_per_second": -1},
+                                 {"detail_fetch_per_round": -1}])
+def test_rate_limit_settings_invalid_rejected(bad: dict):
+    with pytest.raises(ValidationError):
+        Settings(contest_id="1", pta_cookie="c", **bad)
 
 
 def test_load_settings_missing_file_fails(tmp_path: Path):

@@ -2,8 +2,11 @@ import asyncio
 import logging
 import time
 
+import pytest
+
 from pta2ccs.config import Settings
 from pta2ccs.poller import Poller
+from pta2ccs.pta.client import PtaRateLimitError
 from pta2ccs.store import Store
 
 ZERO_SUB_TEAM_ID = "9001540000000000001"
@@ -33,8 +36,15 @@ class FakeClient:
         self.detail_calls: list[str] = []
         self.detail_fail_ids: set[str] = set()
         self.detail_program = "int main(){}"
+        # rate-limit controls (task 14)
+        self.subs_calls = 0
+        self.subs_error: Exception | None = None
+        self.detail_rate_limit_ids: set[str] = set()
 
     async def fetch_submissions(self):
+        self.subs_calls += 1
+        if self.subs_error is not None:
+            raise self.subs_error
         return list(self.subs)
 
     async def fetch_problems(self):
@@ -50,6 +60,8 @@ class FakeClient:
 
     async def fetch_submission_detail(self, sub_id: str):
         self.detail_calls.append(sub_id)
+        if sub_id in self.detail_rate_limit_ids:
+            raise PtaRateLimitError(retry_after=30.0)
         if sub_id in self.detail_fail_ids:
             raise RuntimeError(f"detail boom {sub_id}")
         return {"program": self.detail_program, "compiler": "GXX",
@@ -57,10 +69,12 @@ class FakeClient:
                                  "time": 0.003, "memory": 2048, "exitcode": 0}]}
 
 
-def make_poller(config_poll_seconds: float = 0.01) -> tuple[Poller, FakeClient, Store]:
+def make_poller(config_poll_seconds: float = 0.01,
+                **settings_overrides) -> tuple[Poller, FakeClient, Store]:
     settings = Settings(contest_id="1", pta_cookie="c",
                         poll_interval_seconds=0.01,
-                        config_poll_seconds=config_poll_seconds)
+                        config_poll_seconds=config_poll_seconds,
+                        **settings_overrides)
     client = FakeClient()
     store = Store()
     manual = {"contest": {"start_time": "2023-05-21T09:00:00+08:00",
@@ -231,19 +245,88 @@ def test_detail_per_id_failure_retries_next_round(caplog):
     assert "2" in store.snapshot().sources
 
 
-def test_detail_fetch_capped_per_round(monkeypatch):
-    from pta2ccs import poller as poller_mod
-    monkeypatch.setattr(poller_mod, "DETAIL_FETCH_LIMIT", 2)
+def test_detail_fetch_capped_per_round():
+    # budget from settings (task 14 replaces the old DETAIL_FETCH_LIMIT
+    # module constant): default 5/round drains a 10-id backlog over 2 rounds
+    poller, client, store = make_poller(detail_fetch_per_round=5)
+    client.subs = [sub_row(str(i)) for i in range(10)]
+    asyncio.run(poller.poll_once())
+    assert len(client.detail_calls) == 5  # budget for this round
+    asyncio.run(poller.poll_once())
+    assert len(client.detail_calls) == 10  # remaining backlog drained
+    asyncio.run(poller.poll_once())
+    assert len(client.detail_calls) == 10  # nothing left
+
+
+@pytest.mark.parametrize("overrides", [{"detail_fetch_per_round": 0},
+                                       {"fetch_details": False}])
+def test_detail_fetch_disabled(overrides: dict):
+    # either escape hatch (budget 0 or fetch_details false) → zero detail
+    # calls; the round itself still succeeds
+    poller, client, store = make_poller(**overrides)
+    client.subs = [sub_row("1"), sub_row("2")]
+    asyncio.run(poller.poll_once())
+    assert client.detail_calls == []
+    snap = store.snapshot()
+    assert {"1", "2"} <= set(snap.submissions)
+    assert snap.sources == {}
+
+
+# --- rate limiting (task 14: live 429 storm 2026-10-14) --------------------
+
+def test_rate_limited_round_is_not_a_failure_and_skips_until_cooldown(caplog):
     poller, client, store = make_poller()
-    client.subs = [sub_row(str(i)) for i in range(5)]
+    assert poller.status["rate_limited_until"] is None
+    client.subs_error = PtaRateLimitError(retry_after=30.0)
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+        asyncio.run(poller.poll_once())
+        assert client.subs_calls == 1
+        # rate limit is NOT a failure: counter untouched, last_success untouched
+        assert poller.status["consecutive_failures"] == 0
+        assert poller.status["last_success"] is None
+        assert poller.status["cookie_ok"] is True
+        assert poller.status["rate_limited_until"] is not None  # ISO string
+        assert poller._rate_limit_until is not None  # monotonic deadline
+        assert any("poll rate limited" in rec.message for rec in caplog.records)
+        # next poll_once during cooldown → round skipped entirely, zero PTA calls
+        asyncio.run(poller.poll_once())
+    assert client.subs_calls == 1
+    assert client.detail_calls == []
+    assert client.teams_calls == 0
+
+
+def test_detail_rate_limit_does_not_fail_round(caplog):
+    poller, client, store = make_poller(detail_fetch_per_round=5)
+    client.subs = [sub_row("1"), sub_row("2")]
+    client.detail_rate_limit_ids = {"1", "2"}
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+        asyncio.run(poller.poll_once())
+    # list succeeded → translate/apply still ran with what we have
+    snap = store.snapshot()
+    assert snap is not None
+    assert {"1", "2"} <= set(snap.submissions)
+    assert snap.sources == {}  # throttled details never attached
+    # round is a success; cooldown pushed forward by the detail 429s
+    assert poller.status["consecutive_failures"] == 0
+    assert poller.status["ready"] is True
+    assert poller._rate_limit_until is not None
+    assert poller.status["rate_limited_until"] is not None
+    # ONE summary line, not one per id
+    paused = [rec for rec in caplog.records
+              if "detail fetch paused" in rec.message]
+    assert len(paused) == 1
+    assert "30.0" in paused[0].message or "30" in paused[0].message
+
+
+def test_config_round_rate_limit_also_backs_off():
+    poller, client, store = make_poller(config_poll_seconds=0.01)
+    asyncio.run(poller.poll_once())  # first round succeeds (config fetched)
+    assert client.teams_calls == 1
+    client.subs_error = PtaRateLimitError(retry_after=20.0)
+    time.sleep(0.02)  # next round is a config round again
     asyncio.run(poller.poll_once())
-    assert len(client.detail_calls) == 2  # capped
-    asyncio.run(poller.poll_once())
-    assert len(client.detail_calls) == 4  # next 2 of the backlog
-    asyncio.run(poller.poll_once())
-    assert len(client.detail_calls) == 5  # drain complete
-    asyncio.run(poller.poll_once())
-    assert len(client.detail_calls) == 5  # nothing left
+    assert poller.status["consecutive_failures"] == 0
+    assert poller._rate_limit_until is not None
 
 
 def test_non_config_rounds_keep_problem_limits():
