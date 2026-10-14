@@ -53,17 +53,45 @@ def allocate_group_id(existing_groups) -> str:
     return f"g{highest + 1}"
 
 
+def _label_sort_key(row):
+    """Numeric-aware 学号 comparator: numeric labels sort as numbers (so
+    "20230010" comes after "2023002"); mixed batches fall back to a stable
+    string sort via a (is_numeric, value) tuple key."""
+    lb = str(row.get("label", ""))
+    return (0, int(lb)) if lb.isdigit() else (1, lb)
+
+
 def sort_teams_by_label(rows):
     """Sort team rows ascending by ``label`` (学号).
 
-    Numeric-aware: when every label is a number the sort is numeric
-    (so "20230010" sorts after "2023002"); otherwise it falls back to a
-    plain string sort.
+    Numeric-aware via ``_label_sort_key``: each label maps to an
+    ``(is_numeric, value)`` tuple, so in a mixed batch every numeric label
+    comes first (in numeric order, "20230010" after "2023002"), followed by
+    the non-numeric labels in string order.
     """
-    labels = [str(r.get("label", "")) for r in rows]
-    if labels and all(lb.isdigit() for lb in labels):
-        return sorted(rows, key=lambda r: int(str(r.get("label", ""))))
-    return sorted(rows, key=lambda r: str(r.get("label", "")))
+    return sorted(rows, key=_label_sort_key)
+
+
+# sortable header columns of the teams Treeview ("#" is positional — not a
+# sort target). Value key per column; name/org/groups are case-folded string
+# sorts (deterministic; Chinese names sort by Unicode codepoint order, not
+# pinyin — documented limitation).
+_TEAM_SORT_KEYS = {
+    "label": _label_sort_key,
+    "name": lambda r: str(r.get("name", "")).casefold(),
+    "org": lambda r: str(r.get("organization_name", "")).casefold(),
+    "groups": lambda r: "，".join(r.get("group_names") or []),
+}
+
+
+def sort_team_rows(rows, key, reverse=False) -> list[dict]:
+    """Return a new list of team rows sorted by the named display column.
+
+    ``key`` is one of ``_TEAM_SORT_KEYS`` ("label", "name", "org", "groups").
+    Unknown keys fall back to 学号 (the default initial order).
+    """
+    return sorted(rows, key=_TEAM_SORT_KEYS.get(key, _label_sort_key),
+                  reverse=reverse)
 
 
 def build_problem_rows(problems, saved_colors) -> list[dict]:
@@ -219,7 +247,16 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
         return f"{gid} {name}".strip()
 
     # ---------------- Tab 1: problem colors ----------------
-    pframe = ttk.Frame(root)
+    # Layout: the bottom bar is packed FIRST (side=bottom) so the Notebook
+    # (packed with fill both + expand) gets the remaining central space.
+    # Packed before the tabs' widgets are created.
+    bar = ttk.Frame(root)
+    bar.pack(fill="x", side="bottom")
+
+    notebook = ttk.Notebook(root)
+    notebook.pack(fill="both", expand=True)
+
+    pframe = ttk.Frame(notebook)
     tree = ttk.Treeview(pframe, columns=("ordinal", "label", "name", "color"),
                         show="headings", height=18)
     for col, text, width in (("ordinal", "#", 40), ("label", "题号", 100),
@@ -284,7 +321,7 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
               foreground="#666").pack(anchor="w")
 
     # ---------------- Tab 2: team groups ----------------
-    tframe = ttk.Frame(root)
+    tframe = ttk.Frame(notebook)
     left = ttk.Frame(tframe)
     left.pack(side="left", fill="both", expand=True)
     right = ttk.Frame(tframe, width=300)
@@ -299,6 +336,42 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
         ttree.heading(col, text=text)
         ttree.column(col, width=width, anchor="w")
     ttree.pack(side="left", fill="both", expand=True)
+
+    # sortable header columns (Treeview #2..#5); "#" (ordinal) is a plain
+    # position counter, not a sort target. Clicking a heading sorts asc,
+    # clicking again toggles to desc; clicking a different column resets
+    # to that column ascending. Arrows ▲/▼ mark the active column.
+    _HEADER_KEYS = ("label", "name", "org", "groups")
+    _HEADER_NAMES = {"label": "学号", "name": "姓名", "org": "学校", "groups": "分组"}
+    sort_state = {"col": None, "reverse": False}
+
+    def set_team_headings() -> None:
+        for i, key in enumerate(_HEADER_KEYS, start=2):
+            mark = ""
+            if sort_state["col"] == key:
+                mark = " ▼" if sort_state["reverse"] else " ▲"
+            ttree.heading(f"#{i}", text=_HEADER_NAMES[key] + mark)
+
+    def on_team_head_click(event) -> None:
+        nonlocal team_rows
+        if ttree.identify("region", event.x, event.y) != "heading":
+            return
+        col = ttree.identify_column(event.x)  # "#2".."#5"
+        if col == "#1":  # ordinal — not sortable
+            return
+        key = _HEADER_KEYS[int(col.lstrip("#")) - 2]
+        if sort_state["col"] == key:
+            sort_state["reverse"] = not sort_state["reverse"]
+        else:
+            sort_state["col"] = key
+            sort_state["reverse"] = False
+        team_rows = sort_team_rows(team_rows, key, sort_state["reverse"])
+        set_team_headings()
+        keep_sel = [iid for iid in ttree.selection() if iid in {r["id"] for r in team_rows}]
+        refresh_teams()
+        ttree.selection_set(*keep_sel)
+
+    ttree.bind("<Button-1>", on_team_head_click)
 
     def refresh_teams() -> None:
         ttree.delete(*ttree.get_children())
@@ -316,6 +389,11 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
         gtree.heading(col, text=text)
         gtree.column(col, width=width, anchor="w")
     gtree.pack(fill="x", pady=4)
+
+    # combo must exist BEFORE refresh_groups (refresh_groups writes to
+    # combo["values"]); created here to avoid a NameError on the first call
+    combo = ttk.Combobox(right, state="readonly")
+    combo.pack(fill="x", pady=4)
 
     def refresh_groups() -> None:
         gtree.delete(*gtree.get_children())
@@ -392,8 +470,6 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
 
     ttk.Separator(right, orient="horizontal").pack(fill="x", pady=8)
     ttk.Label(right, text="批量设置（先在左侧多选队伍）").pack(anchor="w")
-    combo = ttk.Combobox(right, state="readonly")
-    combo.pack(fill="x", pady=4)
 
     def batch_add() -> None:
         sel = ttree.selection()
@@ -425,11 +501,10 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
     ttk.Button(batchbtns, text="清除分组", command=batch_clear).pack(
         side="left", padx=4)
 
-    notebook = ttk.Notebook(root)
     notebook.add(pframe, text="题目颜色")
     notebook.add(tframe, text="队伍分组")
 
-    # ---------------- bottom bar ----------------
+    # ---------------- bottom bar buttons ----------------
     def refetch() -> None:
         nonlocal problem_rows, team_rows
         if state["dirty"] and not messagebox.askyesno(
@@ -453,6 +528,10 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
         team_rows = build_team_rows(teams2, group_defs, saved_teams)
         for r in team_rows:
             assignments.setdefault(r["id"], set(r["group_ids"]))
+        # refetch rebuilds team_rows in 学号 order — reset the view sort
+        sort_state["col"] = None
+        sort_state["reverse"] = False
+        set_team_headings()
         refresh_problems()
         refresh_teams()
         refresh_groups()
@@ -475,8 +554,6 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
             return
         root.destroy()
 
-    bar = ttk.Frame(root)
-    bar.pack(fill="x", side="bottom")
     ttk.Button(bar, text="↺ 重新拉取数据", command=refetch).pack(
         side="left", padx=4, pady=4)
     ttk.Button(bar, text="保存到 manual", command=save).pack(
@@ -484,10 +561,13 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
     ttk.Button(bar, text="退出", command=on_close).pack(
         side="right", padx=4, pady=4)
 
-    notebook.pack(fill="both", expand=True)
+    # ensure sizes are laid out before the initial refresh so the Treeviews
+    # compute their geometry against the real (non-zero) parent
+    root.update_idletasks()
     refresh_problems()
     refresh_groups()
     refresh_teams()
+    set_team_headings()
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
 

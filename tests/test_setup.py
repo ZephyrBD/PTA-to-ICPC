@@ -7,6 +7,7 @@ from pta2ccs.setup import (
     build_team_rows,
     fetch_setup_data,
     load_manual_setup,
+    sort_team_rows,
     sort_teams_by_label,
     write_manual_setup,
 )
@@ -44,6 +45,59 @@ def test_sort_teams_by_label_falls_back_to_string():
 
 def test_sort_teams_by_label_empty():
     assert sort_teams_by_label([]) == []
+
+
+# ---------------------------------------------------------------------------
+# sort_team_rows — header-click column sort (view-layer, pure)
+# ---------------------------------------------------------------------------
+
+def _rows():
+    return [
+        {"id": "a", "label": "2023002", "name": "乙", "organization_name": "B校",
+         "group_names": ["正式"]},
+        {"id": "b", "label": "2023001", "name": "甲", "organization_name": "A校",
+         "group_names": []},
+        {"id": "c", "label": "20230010", "name": "丙", "organization_name": "B校",
+         "group_names": ["女队"]},
+    ]
+
+
+def test_sort_team_rows_label_numeric_ascending():
+    out = sort_team_rows(_rows(), "label")
+    assert [r["label"] for r in out] == ["2023001", "2023002", "20230010"]
+
+
+def test_sort_team_rows_label_descending():
+    out = sort_team_rows(_rows(), "label", reverse=True)
+    assert [r["label"] for r in out] == ["20230010", "2023002", "2023001"]
+
+
+def test_sort_team_rows_name_codepoint():
+    # Name sort is casefolded string order: CJK names sort by Unicode
+    # codepoint (deterministic, NOT pinyin); the ASCII assertion
+    # ("Apple" < "banana") covers casefolding, not pinyin.
+    out = sort_team_rows(_rows(), "name")
+    assert [r["name"] for r in out] == ["丙", "乙", "甲"]
+    # ascii casefold matters: 'Apple' < 'banana' even though 'a' > 'B'
+    rows = [{"name": "banana"}, {"name": "Apple"}, {"name": "cherry"}]
+    got = [r["name"] for r in sort_team_rows(rows, "name")]
+    assert got == ["Apple", "banana", "cherry"]
+
+
+def test_sort_team_rows_org_then_groups():
+    out = sort_team_rows(_rows(), "org")
+    assert [r["organization_name"] for r in out] == ["A校", "B校", "B校"]
+    out = sort_team_rows(_rows(), "groups")
+    assert [r["group_names"] for r in out] == [[], ["女队"], ["正式"]]
+
+
+def test_sort_team_rows_unknown_key_falls_back_to_label():
+    out = sort_team_rows(_rows(), "bogus")
+    assert [r["label"] for r in out] == ["2023001", "2023002", "20230010"]
+
+
+def test_sort_team_rows_empty():
+    assert sort_team_rows([], "label") == []
 
 
 def test_build_problem_rows_prefills_saved_color():
