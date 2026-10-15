@@ -6,8 +6,6 @@ from pydantic import BaseModel, Field
 
 
 class Settings(BaseModel):
-    contest_id: str
-    pta_cookie: str
     manual_dir: Path = Path("manual")
     poll_interval_seconds: float = Field(default=5.0, gt=0)
     config_poll_seconds: float = Field(default=60.0, gt=0)
@@ -28,8 +26,10 @@ def _fail(msg: str) -> None:
 
 
 def load_settings(path: Path = Path("config.json")) -> Settings:
+    """Read config.json; a missing file means all-default settings, while a
+    present file must parse and validate strictly."""
     if not path.exists():
-        _fail(f"config file not found: {path}")
+        return Settings()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
@@ -40,6 +40,29 @@ def load_settings(path: Path = Path("config.json")) -> Settings:
     except Exception as e:
         _fail(f"invalid config in {path}: {e}")
         raise
+
+
+def load_connection(manual_dir: Path) -> dict[str, str] | None:
+    """Read manual_dir/setup-connection.json (written by the setup GUI).
+
+    Returns {"contest_id": ..., "pta_cookie": ...} only when both are
+    non-empty strings; missing file, malformed JSON, or incomplete fields
+    give None — never raises, the caller decides how to fail.
+    """
+    path = manual_dir / "setup-connection.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    contest_id = data.get("contest_id")
+    pta_cookie = data.get("pta_cookie")
+    if not isinstance(contest_id, str) or not contest_id:
+        return None
+    if not isinstance(pta_cookie, str) or not pta_cookie:
+        return None
+    return {"contest_id": contest_id, "pta_cookie": pta_cookie}
 
 
 _ID_SECTIONS = ("groups", "organizations", "teams", "problems", "languages")

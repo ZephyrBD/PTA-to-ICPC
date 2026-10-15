@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from pta2ccs.config import Settings
+from pta2ccs.app import _ConnectedSettings
 from pta2ccs.poller import Poller
 from pta2ccs.pta.client import PtaRateLimitError
 from pta2ccs.store import Store
@@ -71,10 +71,10 @@ class FakeClient:
 
 def make_poller(config_poll_seconds: float = 0.01,
                 **settings_overrides) -> tuple[Poller, FakeClient, Store]:
-    settings = Settings(contest_id="1", pta_cookie="c",
-                        poll_interval_seconds=0.01,
-                        config_poll_seconds=config_poll_seconds,
-                        **settings_overrides)
+    settings = _ConnectedSettings(contest_id="1", pta_cookie="c",
+                                  poll_interval_seconds=0.01,
+                                  config_poll_seconds=config_poll_seconds,
+                                  **settings_overrides)
     client = FakeClient()
     store = Store()
     manual = {"contest": {"start_time": "2023-05-21T09:00:00+08:00",

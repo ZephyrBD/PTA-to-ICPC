@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from .config import Settings, load_manual, load_settings
+from .config import Settings, load_connection, load_manual, load_settings
 from .models import error_body, make_access, make_api_info
 from .poller import Poller
 from .pta.client import PtaClient
@@ -174,20 +175,40 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
     return app
 
 
-def _make_poller(settings: Settings, manual: dict, store: Store) -> tuple[Poller, str]:
+class _ConnectedSettings(Settings):
+    """Settings plus the PTA connection identity, bridged from
+    load_connection for Poller.translate, which still reads
+    settings.contest_id (poller.py's own migration pending). Not part of
+    Settings itself: config.json no longer carries the connection.
+    """
+    contest_id: str = ""
+    pta_cookie: str = ""
+
+
+def _make_poller(settings: Settings, conn: dict, manual: dict,
+                 store: Store) -> tuple[Poller, str]:
     """Build the PTA client/poller pair; tz comes from manual config BEFORE
     the client is constructed so UTC submitAt values convert to the right
     wall clock (client default is +08:00)."""
     tz = ((manual.get("contest") or {}).get("pta_timezone", "+08:00"))
-    client = PtaClient("https://pintia.cn", settings.contest_id,
-                       settings.pta_cookie, tz=tz,
+    client = PtaClient("https://pintia.cn", conn["contest_id"],
+                       conn["pta_cookie"], tz=tz,
                        requests_per_second=settings.pta_requests_per_second)
-    return Poller(client, store, settings, manual), tz
+    poller_settings = _ConnectedSettings(
+        **settings.model_dump(), contest_id=conn["contest_id"],
+        pta_cookie=conn["pta_cookie"])
+    return Poller(client, store, poller_settings, manual), tz
 
 
-def _build_default_app() -> FastAPI:
+def _build_default_app(conn: dict | None = None) -> FastAPI:
     settings = load_settings(Path("config.json"))
+    if conn is None:
+        conn = load_connection(settings.manual_dir)
+        if conn is None:
+            print("connection not configured — run 'python -m pta2ccs.setup' "
+                  "first", file=sys.stderr)
+            raise SystemExit(1)
     manual = load_manual(settings.manual_dir)
     store = Store()
-    poller, tz = _make_poller(settings, manual, store)
-    return create_app(store, poller, settings.contest_id, tz=tz)
+    poller, tz = _make_poller(settings, conn, manual, store)
+    return create_app(store, poller, conn["contest_id"], tz=tz)

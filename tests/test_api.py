@@ -198,9 +198,11 @@ def test_healthz_without_poller():
 def test_default_poller_client_gets_manual_timezone():
     # Fix A: tz must reach PtaClient (its default +08:00 would mis-convert
     # UTC submitAt for any other contest timezone)
-    settings = Settings(contest_id="c1", pta_cookie="cookie")
+    settings = Settings()
     manual = {"contest": {"pta_timezone": "+09:00"}}
-    poller, tz = _make_poller(settings, manual, Store())
+    poller, tz = _make_poller(settings, {"contest_id": "c1",
+                                         "pta_cookie": "cookie"},
+                              manual, Store())
     assert tz == "+09:00"
     assert poller.client._tz == "+09:00"
 
@@ -227,8 +229,7 @@ class _LifespanFakeClient:
 def _make_lifespan_app(closable: bool):
     from pta2ccs.poller import Poller
     client = _LifespanFakeClient(closable)
-    settings = Settings(contest_id="c1", pta_cookie="c",
-                        poll_interval_seconds=0.01, config_poll_seconds=0.01)
+    settings = Settings(poll_interval_seconds=0.01, config_poll_seconds=0.01)
     poller = Poller(client, Store(), settings, {"contest": {}})
     app = create_app(Store(), poller=poller, contest_id="c1")
     return app, client
@@ -277,7 +278,8 @@ def test_healthz_spreads_poller_rate_limited_until():
 
 
 def test_default_poller_client_gets_rate_limit_settings():
-    settings = Settings(contest_id="c1", pta_cookie="cookie",
-                        pta_requests_per_second=5.0)
-    poller, _tz = _make_poller(settings, {"contest": {}}, Store())
+    settings = Settings(pta_requests_per_second=5.0)
+    poller, _tz = _make_poller(settings, {"contest_id": "c1",
+                                          "pta_cookie": "cookie"},
+                               {"contest": {}}, Store())
     assert poller.client._min_interval == 1.0 / 5.0

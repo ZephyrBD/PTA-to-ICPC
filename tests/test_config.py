@@ -4,13 +4,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from pta2ccs.config import Settings, load_manual, load_settings
+from pta2ccs.config import Settings, load_connection, load_manual, load_settings
 
 
 def make_cfg(tmp_path: Path, **overrides) -> Path:
     data = {
-        "contest_id": "1234567890",
-        "pta_cookie": "cookie-value",
         "manual_dir": "manual",
         "poll_interval_seconds": 5.0,
         "config_poll_seconds": 60.0,
@@ -25,15 +23,13 @@ def make_cfg(tmp_path: Path, **overrides) -> Path:
 
 def test_load_settings_reads_all_fields(tmp_path: Path):
     s = load_settings(make_cfg(tmp_path, port=9001))
-    assert s.contest_id == "1234567890"
-    assert s.pta_cookie == "cookie-value"
     assert s.port == 9001
     assert s.manual_dir == Path("manual")
 
 
-def test_load_settings_missing_key_fails(tmp_path: Path):
+def test_load_settings_invalid_field_fails(tmp_path: Path):
     p = tmp_path / "config.json"
-    p.write_text(json.dumps({"contest_id": "1"}), encoding="utf-8")
+    p.write_text(json.dumps({"poll_interval_seconds": 0}), encoding="utf-8")
     with pytest.raises(SystemExit) as excinfo:
         load_settings(p)
     assert excinfo.value.code == 1
@@ -42,7 +38,7 @@ def test_load_settings_missing_key_fails(tmp_path: Path):
 # --- rate-limit settings (task 14) ----------------------------------------
 
 def test_rate_limit_settings_defaults():
-    s = Settings(contest_id="1", pta_cookie="c")
+    s = Settings()
     assert s.pta_requests_per_second == 2.0
     assert s.detail_fetch_per_round == 5
     assert s.fetch_details is True
@@ -62,13 +58,51 @@ def test_rate_limit_settings_from_file(tmp_path: Path):
                                  {"detail_fetch_per_round": -1}])
 def test_rate_limit_settings_invalid_rejected(bad: dict):
     with pytest.raises(ValidationError):
-        Settings(contest_id="1", pta_cookie="c", **bad)
+        Settings(**bad)
 
 
-def test_load_settings_missing_file_fails(tmp_path: Path):
-    with pytest.raises(SystemExit) as excinfo:
-        load_settings(tmp_path / "nope.json")
-    assert excinfo.value.code == 1
+def test_load_settings_missing_file_returns_defaults(tmp_path: Path):
+    assert load_settings(tmp_path / "nope.json") == Settings()
+
+
+def test_load_settings_empty_json_returns_defaults(tmp_path: Path):
+    p = tmp_path / "config.json"
+    p.write_text("{}", encoding="utf-8")
+    assert load_settings(p) == Settings()
+
+
+# --- connection (manual/setup-connection.json, task 17) ---------------------
+
+def test_load_connection_returns_both_fields(tmp_path: Path):
+    (tmp_path / "setup-connection.json").write_text(
+        json.dumps({"contest_id": "1234567890", "pta_cookie": "cookie"}),
+        encoding="utf-8")
+    assert load_connection(tmp_path) == {
+        "contest_id": "1234567890", "pta_cookie": "cookie"}
+
+
+def test_load_connection_missing_file(tmp_path: Path):
+    assert load_connection(tmp_path / "nope") is None
+
+
+def test_load_connection_malformed_json(tmp_path: Path):
+    (tmp_path / "setup-connection.json").write_text("{oops", encoding="utf-8")
+    assert load_connection(tmp_path) is None
+
+
+@pytest.mark.parametrize("payload", [
+    {"contest_id": "", "pta_cookie": "cookie"},
+    {"contest_id": "1234567890", "pta_cookie": ""},
+    {"contest_id": "1234567890"},
+    {"pta_cookie": "cookie"},
+    {},
+    ["contest_id", "pta_cookie"],
+    "not-a-dict",
+])
+def test_load_connection_incomplete_fields(tmp_path: Path, payload):
+    (tmp_path / "setup-connection.json").write_text(
+        json.dumps(payload), encoding="utf-8")
+    assert load_connection(tmp_path) is None
 
 
 def write_manual(dirpath: Path, name: str, data: dict) -> None:
