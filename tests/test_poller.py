@@ -725,6 +725,11 @@ def test_pending_verdict_warning_deduped(caplog):
             poller._warn_pending_verdicts(_FakeData(2))
     warns = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warns) == 1                      # N polls, unchanged count
+    # the warning is informational only: finalization is time-based (end +
+    # 5:00) regardless of pending verdicts, which are omitted when it fires
+    msg = warns[0].getMessage()
+    assert "unresolved" in msg and "end + 5:00" in msg and "omitted" in msg
+    assert "not finalizing" not in msg
 
 
 def test_pending_verdict_warning_relogs_on_count_change(caplog):

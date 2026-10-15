@@ -27,7 +27,7 @@ from pathlib import Path
 from .config import Settings, load_connection, load_settings
 from .pta.client import PtaAuthError, PtaClient
 from .timefmt import parse_finalized_at, parse_reltime, to_iso_time
-from .translate import PALETTE
+from .translate import PALETTE, resolve_contest_times
 
 SETUP_PROBLEMS_FILE = "setup-problems.json"
 SETUP_GROUPS_FILE = "setup-groups.json"
@@ -82,6 +82,7 @@ def sort_teams_by_label(rows):
 _TEAM_SORT_KEYS = {
     "label": _label_sort_key,
     "name": lambda r: str(r.get("name", "")).casefold(),
+    "seat": lambda r: str(r.get("seat", "")).casefold(),
     "org": lambda r: str(r.get("organization_name", "")).casefold(),
     "groups": lambda r: "，".join(r.get("group_names") or []),
 }
@@ -90,8 +91,8 @@ _TEAM_SORT_KEYS = {
 def sort_team_rows(rows, key, reverse=False) -> list[dict]:
     """Return a new list of team rows sorted by the named display column.
 
-    ``key`` is one of ``_TEAM_SORT_KEYS`` ("label", "name", "org", "groups").
-    Unknown keys fall back to 学号 (the default initial order).
+    ``key`` is one of ``_TEAM_SORT_KEYS`` ("label", "name", "seat", "org",
+    "groups"). Unknown keys fall back to 学号 (the default initial order).
     """
     return sorted(rows, key=_TEAM_SORT_KEYS.get(key, _label_sort_key),
                   reverse=reverse)
@@ -200,11 +201,12 @@ def build_teams_setup(assignments, team_meta) -> dict:
     return out
 
 
-async def fetch_setup_data(client) -> tuple[list[dict], list[dict]]:
-    """One-shot fetch of (problems, teams) from PTA."""
+async def fetch_setup_data(client) -> tuple[list[dict], list[dict], dict]:
+    """One-shot fetch of (problems, teams, contest meta) from PTA."""
     problems = await client.fetch_problems()
     teams = await client.fetch_teams()
-    return problems, teams
+    meta = await client.fetch_contest_meta()
+    return problems, teams, meta
 
 
 def build_contest_setup(contest: dict) -> dict:
@@ -227,6 +229,106 @@ def build_contest_setup(contest: dict) -> dict:
     elif fa and parse_finalized_at(fa)[0] == "at":
         out["finalized_at"] = fa
     return out
+
+
+def prefill_contest_times(meta: dict, saved_contest: dict | None = None,
+                          tz: str = "+08:00") -> dict:
+    """Initial values for the 比赛设置 time boxes ``{"start_time",
+    "duration", "scoreboard_freeze_duration"}``.
+
+    Per key: the saved override wins when non-blank, else the PTA-derived
+    value, else ``""``. Delegates to :func:`translate.resolve_contest_times`
+    so the prefilled freeze is computed against the RESOLVED duration (saved
+    override wins) — i.e. "prefill then save unchanged" reproduces exactly
+    what the server would resolve. ``tz`` is the saved contest's
+    ``pta_timezone``; it only affects the emitted ``start_time`` offset.
+
+    A non-positive resolved freeze (the clamped ``"0:00:00"``) becomes ``""``:
+    a blank box means 封榜关闭 on save, whereas ``validate_contest_times``
+    rejects a literal ``"0:00:00"`` (freeze must be > 0) — without this the
+    operator could not save a prefill untouched. ``_build_contest`` is
+    unaffected (it still resolves ``"0:00:00"``).
+    """
+    resolved = resolve_contest_times(saved_contest or {}, meta or {}, tz)
+    freeze = resolved.get("scoreboard_freeze_duration") or ""
+    if freeze:
+        try:
+            if parse_reltime(freeze).total_seconds() <= 0:
+                freeze = ""
+        except (ValueError, TypeError, IndexError):
+            freeze = ""  # unexpected form → treat as 封榜关闭 rather than trap the save
+    return {"start_time": resolved.get("start_time") or "",
+            "duration": resolved.get("duration") or "",
+            "scoreboard_freeze_duration": freeze}
+
+
+def merge_contest_prefill(current: dict, last_prefill: dict,
+                          new_prefill: dict) -> dict:
+    """Three-way merge for the 比赛设置 boxes after a refetch.
+
+    One rule: a var is updated to ``new_prefill[k]`` only when its current
+    text still equals ``last_prefill[k]`` (the user has not edited it); a
+    user edit always wins. Returns ``{"values", "prefill"}`` where
+    ``values[k]`` is the next ``StringVar`` text and ``prefill[k]`` is the
+    new bookkeeping to remember — so the caller updates both in one step.
+    """
+    values: dict = {}
+    prefill: dict = {}
+    for key in ("start_time", "duration", "scoreboard_freeze_duration"):
+        untouched = str(current.get(key) or "") == str(last_prefill.get(key) or "")
+        values[key] = new_prefill.get(key, "") if untouched else current.get(key, "")
+        prefill[key] = new_prefill.get(key, "")
+    return {"values": values, "prefill": prefill}
+
+
+def normalize_team_meta(seat, members, coaches) -> dict:
+    """Clean a team dialog result: ``seat`` stripped; blank member/coach
+    entries dropped and the rest stripped. Returns ``{"seat", "members",
+    "coaches"}`` ready to store in ``team_meta[tid]``."""
+    return {
+        "seat": str(seat or "").strip(),
+        "members": [str(m).strip() for m in members or [] if str(m).strip()],
+        "coaches": [str(c).strip() for c in coaches or [] if str(c).strip()],
+    }
+
+
+def apply_team_meta(team_meta: dict, tid: str, result: dict) -> None:
+    """Write a dialog result (already ``normalize_team_meta``-normalized, or
+    raw — it is normalized again here) into ``team_meta[tid]``."""
+    team_meta[tid] = normalize_team_meta(
+        result.get("seat"), result.get("members"), result.get("coaches"))
+
+
+def render_team_seat(team_meta: dict, row: dict) -> str:
+    """Seat text to display for a team table ``row``.
+
+    ``team_meta`` is the live source of truth (the dialog writes there); the
+    row's own ``seat`` is only the fallback until a dialog has touched it, so
+    a freshly edited 座位号 shows immediately instead of waiting for a
+    refetch to rebuild ``team_rows``."""
+    entry = team_meta.get(row.get("id"))
+    if entry is not None and "seat" in entry:
+        return str(entry.get("seat") or "")
+    return str(row.get("seat") or "")
+
+
+def apply_team_edit(team_meta: dict, team_rows, tid: str, result: dict) -> None:
+    """Apply a confirmed dialog result to BOTH the store and the display rows.
+
+    Writes the normalized entry into ``team_meta[tid]`` and mirrors
+    ``seat`` / ``members`` / ``coaches`` into the matching ``team_rows`` entry
+    (when present). Without the mirror, the 座位号 sort key (which reads
+    ``row["seat"]``) would disagree with the rendered cell (which reads
+    ``team_meta``) between an edit and the next refetch, so a 座位号 sort could
+    order rows inconsistently with the column shown."""
+    apply_team_meta(team_meta, tid, result)
+    entry = team_meta[tid]
+    for row in team_rows or []:
+        if str(row.get("id")) == str(tid):
+            row["seat"] = entry["seat"]
+            row["members"] = list(entry["members"])
+            row["coaches"] = list(entry["coaches"])
+            break
 
 
 def validate_contest_times(start_time, duration, freeze, finalized_at,
@@ -401,7 +503,8 @@ def _client(conn: dict, requests_per_second: float) -> PtaClient:
                      requests_per_second=requests_per_second)
 
 
-def _fetch_remote(conn: dict, requests_per_second: float) -> tuple[list[dict], list[dict]]:
+def _fetch_remote(conn: dict, requests_per_second: float
+                  ) -> tuple[list[dict], list[dict], dict]:
     async def run():
         client = _client(conn, requests_per_second)
         try:
@@ -499,7 +602,91 @@ def launch_connection_dialog(parent, settings: Settings, manual_dir,
     return result["conn"]
 
 
-def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
+def launch_team_dialog(parent, title: str, meta: dict) -> dict | None:
+    """Modal dialog to edit one team's 座位号 / 队员 / 教练.
+
+    ``meta`` is the team's existing ``{"seat", "members", "coaches"}``;
+    the listboxes' 添加/移除 keep the previous behaviour (removing with
+    nothing selected is a no-op). Returns a ``normalize_team_meta``-shaped
+    dict on 确定, ``None`` on 取消 / window close (the caller must then
+    change nothing).
+    """
+    import tkinter as tk
+    from tkinter import simpledialog, ttk
+
+    dlg = tk.Toplevel(parent)
+    dlg.title(title)
+    dlg.geometry("320x420")
+    dlg.resizable(False, False)
+
+    result: dict = {"meta": None}
+    members = list(meta.get("members") or [])
+    coaches = list(meta.get("coaches") or [])
+
+    ttk.Label(dlg, text="座位号").pack(anchor="w", padx=12, pady=(12, 0))
+    seat_entry = ttk.Entry(dlg, width=32)
+    seat_entry.pack(fill="x", padx=12)
+    seat_entry.insert(0, str(meta.get("seat") or ""))
+
+    ttk.Label(dlg, text="队员").pack(anchor="w", padx=12, pady=(8, 0))
+    members_list = tk.Listbox(dlg, height=6, exportselection=False)
+    members_list.pack(fill="x", padx=12)
+
+    ttk.Label(dlg, text="教练").pack(anchor="w", padx=12, pady=(8, 0))
+    coaches_list = tk.Listbox(dlg, height=4, exportselection=False)
+    coaches_list.pack(fill="x", padx=12)
+
+    def refill(lb, names: list) -> None:
+        lb.delete(0, "end")
+        for name in names:
+            lb.insert("end", name)
+
+    def add(kind: str, lb) -> None:
+        name = simpledialog.askstring(title, "添加：", parent=dlg)
+        if name is None or not name.strip():
+            return
+        (members if kind == "members" else coaches).append(name.strip())
+        refill(lb, members if kind == "members" else coaches)
+
+    def remove(kind: str, lb) -> None:
+        sel = lb.curselection()
+        if not sel:  # nothing selected → no-op
+            return
+        idx = sel[0]
+        (members if kind == "members" else coaches).pop(idx)
+        refill(lb, members if kind == "members" else coaches)
+
+    for kind, lb in (("members", members_list), ("coaches", coaches_list)):
+        btns = ttk.Frame(dlg)
+        btns.pack(fill="x", padx=12, pady=(2, 0))
+        ttk.Button(btns, text="＋添加",
+                   command=lambda k=kind, b=lb: add(k, b)).pack(side="left")
+        ttk.Button(btns, text="移除",
+                   command=lambda k=kind, b=lb: remove(k, b)).pack(
+            side="left", padx=4)
+
+    refill(members_list, members)
+    refill(coaches_list, coaches)
+
+    def on_ok() -> None:
+        result["meta"] = normalize_team_meta(
+            seat_entry.get(), members, coaches)
+        dlg.destroy()
+
+    btns = ttk.Frame(dlg)
+    btns.pack(fill="x", side="bottom", padx=12, pady=12)
+    ttk.Button(btns, text="取消", command=dlg.destroy).pack(side="right")
+    ttk.Button(btns, text="确定", command=on_ok).pack(side="right", padx=6)
+
+    dlg.bind("<Return>", lambda _e: on_ok())
+    dlg.bind("<Escape>", lambda _e: dlg.destroy())
+    dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+    dlg.grab_set()
+    dlg.wait_window()
+    return result["meta"]
+
+
+def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
                conn: dict) -> None:
     """Build and run the setup window. Blocking (tkinter mainloop)."""
     import tkinter as tk
@@ -658,20 +845,30 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
 
     ttree = ttk.Treeview(
         left, show="headings", selectmode="extended",
-        columns=("ordinal", "label", "name", "org", "groups"))
-    for col, text, width in (("ordinal", "#", 40), ("label", "学号", 110),
-                             ("name", "姓名", 120), ("org", "学校", 160),
-                             ("groups", "分组", 180)):
+        columns=("ordinal", "label", "name", "seat", "org", "groups"))
+    for col, text, width in (("ordinal", "#", 40), ("label", "学号", 100),
+                             ("name", "姓名", 110), ("seat", "座位号", 80),
+                             ("org", "学校", 150), ("groups", "分组", 170)):
         ttree.heading(col, text=text)
         ttree.column(col, width=width, anchor="w")
+
+    # the 座位号 / 队员 / 教练 dialog opener sits below the table (pack it
+    # FIRST so it keeps its height while the table expands to fill the rest)
+    edit_bar = ttk.Frame(left)
+    edit_bar.pack(side="bottom", fill="x", padx=8, pady=6)
+    edit_btn = ttk.Button(edit_bar, text="编辑队伍…", state="disabled")
+    edit_btn.pack(side="left")
+    ttk.Label(edit_bar, text="（双击 / 回车 也可编辑所选队伍）",
+              foreground="#666").pack(side="left", padx=8)
     ttree.pack(side="left", fill="both", expand=True)
 
-    # sortable header columns (Treeview #2..#5); "#" (ordinal) is a plain
+    # sortable header columns (Treeview #2..#6); "#" (ordinal) is a plain
     # position counter, not a sort target. Clicking a heading sorts asc,
     # clicking again toggles to desc; clicking a different column resets
     # to that column ascending. Arrows ▲/▼ mark the active column.
-    _HEADER_KEYS = ("label", "name", "org", "groups")
-    _HEADER_NAMES = {"label": "学号", "name": "姓名", "org": "学校", "groups": "分组"}
+    _HEADER_KEYS = ("label", "name", "seat", "org", "groups")
+    _HEADER_NAMES = {"label": "学号", "name": "姓名", "seat": "座位号",
+                     "org": "学校", "groups": "分组"}
     sort_state = {"col": None, "reverse": False}
 
     def set_team_headings() -> None:
@@ -685,7 +882,7 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         nonlocal team_rows
         if ttree.identify("region", event.x, event.y) != "heading":
             return
-        col = ttree.identify_column(event.x)  # "#2".."#5"
+        col = ttree.identify_column(event.x)  # "#2".."#6"
         if col == "#1":  # ordinal — not sortable
             return
         key = _HEADER_KEYS[int(col.lstrip("#")) - 2]
@@ -709,7 +906,43 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
             names = "，".join(group_display(g) for g in gids)
             ttree.insert("", "end", iid=r["id"],
                          values=(i + 1, r["label"], r["name"],
+                                 render_team_seat(team_meta, r),
                                  r["organization_name"], names))
+
+    def edit_selection() -> list:
+        return ttree.selection()
+
+    def sync_team_edit_state(_e=None) -> None:
+        edit_btn.configure(
+            state="normal" if len(edit_selection()) == 1 else "disabled")
+
+    def on_team_double_click(event) -> None:
+        # never treat a heading click (column sort) as "edit this row"
+        if ttree.identify_region(event.x, event.y) != "cell":
+            return
+        row = ttree.identify_row(event.y)
+        if row:
+            ttree.selection_set(row)
+            edit_team()
+
+    def edit_team() -> None:
+        sel = edit_selection()
+        if len(sel) != 1:
+            return
+        tid = sel[0]
+        current = dict(team_meta.get(
+            tid, {"seat": "", "members": [], "coaches": []}))
+        result = launch_team_dialog(root, f"编辑队伍 {tid}", current)
+        if result is None:
+            return  # 取消 → change nothing (team_meta untouched)
+        apply_team_edit(team_meta, team_rows, tid, result)
+        mark_dirty()
+        refresh_teams()
+
+    edit_btn.configure(command=edit_team)
+    ttree.bind("<<TreeviewSelect>>", sync_team_edit_state)
+    ttree.bind("<Double-1>", on_team_double_click)
+    ttree.bind("<Return>", lambda _e: edit_team())
 
     ttk.Label(right, text="已定义分组").pack(anchor="w")
     gtree = ttk.Treeview(right, columns=("id", "name"), show="headings",
@@ -830,131 +1063,31 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
     ttk.Button(batchbtns, text="清除分组", command=batch_clear).pack(
         side="left", padx=4)
 
-    # ---------------- seat / members / coaches panel ----------------
-    # edits team_meta for the single selected team; disabled (and cleared)
-    # when the selection is empty or multi-select
-    meta_frame = ttk.LabelFrame(tframe, text="座位号 / 成员")
-    meta_frame.pack(side="right", fill="y", padx=8, pady=8)
-
-    ttk.Label(meta_frame, text="座位号").pack(anchor="w", padx=8, pady=(8, 0))
-    seat_entry = ttk.Entry(meta_frame, width=16)
-    seat_entry.pack(fill="x", padx=8)
-
-    ttk.Label(meta_frame, text="队员").pack(anchor="w", padx=8, pady=(6, 0))
-    members_list = tk.Listbox(meta_frame, height=5, exportselection=False)
-    members_list.pack(fill="x", padx=8)
-    member_btns = ttk.Frame(meta_frame)
-    member_btns.pack(fill="x", padx=8, pady=(2, 6))
-
-    ttk.Label(meta_frame, text="教练").pack(anchor="w", padx=8, pady=(6, 0))
-    coaches_list = tk.Listbox(meta_frame, height=3, exportselection=False)
-    coaches_list.pack(fill="x", padx=8)
-    coach_btns = ttk.Frame(meta_frame)
-    coach_btns.pack(fill="x", padx=8, pady=(2, 8))
-
-    # every editable widget in the panel; state normal ⇔ one team selected
-    meta_editables: list = [seat_entry, members_list, coaches_list]
-
-    edit_state = {"tid": None}
-
-    def set_meta_enabled(enabled: bool) -> None:
-        for w in meta_editables:
-            w.configure(state="normal" if enabled else "disabled")
-        for btn in member_btns.winfo_children() + coach_btns.winfo_children():
-            btn.configure(state="normal" if enabled else "disabled")
-
-    def flush_seat() -> None:
-        # Entry has no reliable change callback — commit on selection
-        # change / save so the edit is never lost
-        tid = edit_state["tid"]
-        if tid is not None:
-            team_meta.setdefault(tid, {"seat": "", "members": [],
-                                       "coaches": []})["seat"] = \
-                seat_entry.get().strip()
-
-    def load_team_meta() -> None:
-        flush_seat()
-        sel = ttree.selection()
-        tid = sel[0] if len(sel) == 1 else None
-        edit_state["tid"] = tid
-        seat_entry.delete(0, "end")
-        members_list.delete(0, "end")
-        coaches_list.delete(0, "end")
-        set_meta_enabled(tid is not None)
-        if tid is None:
-            return
-        meta = team_meta.setdefault(tid, {"seat": "", "members": [],
-                                          "coaches": []})
-        seat_entry.insert(0, meta["seat"])
-        for name in meta["members"]:
-            members_list.insert("end", name)
-        for name in meta["coaches"]:
-            coaches_list.insert("end", name)
-
-    def add_person(kind: str, lb, title: str) -> None:
-        tid = edit_state["tid"]
-        if tid is None:
-            messagebox.showinfo("座位号 / 成员", "请先选择一个队伍", parent=root)
-            return
-        name = simpledialog.askstring("座位号 / 成员", f"添加{title}：",
-                                      parent=root)
-        if name is None or not name.strip():
-            return
-        flush_seat()
-        meta = team_meta.setdefault(tid, {"seat": "", "members": [],
-                                          "coaches": []})
-        meta[kind].append(name.strip())
-        lb.insert("end", name.strip())
-        mark_dirty()
-
-    def remove_person(kind: str, lb) -> None:
-        tid = edit_state["tid"]
-        sel = lb.curselection()
-        if tid is None or not sel:
-            return
-        flush_seat()
-        idx = sel[0]
-        lb.delete(idx)
-        team_meta.setdefault(tid, {"seat": "", "members": [],
-                                   "coaches": []})[kind].pop(idx)
-        mark_dirty()
-
-    def seat_edited(*_args) -> None:
-        if edit_state["tid"] is not None:
-            mark_dirty()
-
-    seat_entry.bind("<KeyRelease>", seat_edited)
-
-    ttk.Button(member_btns, text="＋添加",
-               command=lambda: add_person("members", members_list,
-                                          "队员")).pack(side="left")
-    ttk.Button(member_btns, text="移除",
-               command=lambda: remove_person("members", members_list)).pack(
-        side="left", padx=4)
-    ttk.Button(coach_btns, text="＋添加",
-               command=lambda: add_person("coaches", coaches_list,
-                                          "教练")).pack(side="left")
-    ttk.Button(coach_btns, text="移除",
-               command=lambda: remove_person("coaches", coaches_list)).pack(
-        side="left", padx=4)
-
-    ttree.bind("<<TreeviewSelect>>", lambda _e: load_team_meta())
-    set_meta_enabled(False)  # nothing selected at startup
-
     notebook.add(pframe, text="题目颜色")
     notebook.add(tframe, text="队伍分组")
 
     # ---------------- Tab 3: contest times ----------------
     # manual/setup-contest.json overrides the PTA-derived start/duration/
-    # freeze and the finalization rule; blank fields stay automatic.
+    # freeze and the finalization rule; the boxes are PREFILLED from the
+    # freshly fetched PTA values (saved override wins), and blank fields
+    # stay automatic on save (written explicitly like any other edit).
     cframe = ttk.Frame(notebook)
     contest_form = ttk.Frame(cframe)
     contest_form.pack(anchor="nw", padx=12, pady=12)
 
-    start_var = tk.StringVar(value=str(contest_saved.get("start_time") or ""))
-    dur_var = tk.StringVar(value=str(contest_saved.get("duration") or ""))
-    freeze_var = tk.StringVar(
-        value=str(contest_saved.get("scoreboard_freeze_duration") or ""))
+    contest_tz = str(contest_saved.get("pta_timezone") or "+08:00")
+    initial = prefill_contest_times(meta, contest_saved, tz=contest_tz)
+    start_var = tk.StringVar(value=initial["start_time"])
+    dur_var = tk.StringVar(value=initial["duration"])
+    freeze_var = tk.StringVar(value=initial["scoreboard_freeze_duration"])
+    # `last_prefill` records what the last prefill/refetch left in the boxes;
+    # a box is "untouched" (so a refetch may refresh it) iff its live text
+    # still equals this — the live text is read via collect_contest_prefill.
+    prefill_state = {
+        "last_prefill": {"start_time": start_var.get(),
+                         "duration": dur_var.get(),
+                         "scoreboard_freeze_duration": freeze_var.get()},
+    }
     fa_saved = str(contest_saved.get("finalized_at") or "")
     if fa_saved == "never":
         fa_mode = "never"
@@ -994,7 +1127,7 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         mark_dirty()
         sync_fa_entry()
 
-    ttk.Radiobutton(fa_radios, text="自动（留空）", value="auto",
+    ttk.Radiobutton(fa_radios, text="自动（比赛结束后 5 分钟）", value="auto",
                     variable=fa_mode_var, command=on_fa_mode).pack(anchor="w")
     ttk.Radiobutton(fa_radios, text="指定时间", value="at",
                     variable=fa_mode_var, command=on_fa_mode).pack(anchor="w")
@@ -1004,17 +1137,46 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
     fa_entry.bind("<KeyRelease>", lambda _e: mark_dirty())
     sync_fa_entry()
 
+    def collect_contest_prefill() -> dict:
+        """Read the 比赛设置 boxes' CURRENT text straight from their vars, so
+        an edit made since the last prefill is visible to merge_contest_prefill
+        (a refetch must not clobber a value the user typed)."""
+        return {"start_time": start_var.get(),
+                "duration": dur_var.get(),
+                "scoreboard_freeze_duration": freeze_var.get()}
+
+    def apply_contest_prefill() -> None:
+        merged = merge_contest_prefill(
+            collect_contest_prefill(), prefill_state["last_prefill"],
+            prefill_contest_times(meta, contest_saved, tz=contest_tz))
+        start_var.set(merged["values"]["start_time"])
+        dur_var.set(merged["values"]["duration"])
+        freeze_var.set(merged["values"]["scoreboard_freeze_duration"])
+        prefill_state["last_prefill"] = dict(merged["prefill"])
+
+    def reset_contest_times() -> None:
+        for var in (start_var, dur_var, freeze_var):
+            var.set("")
+        prefill_state["last_prefill"] = {"start_time": "", "duration": "",
+                                         "scoreboard_freeze_duration": ""}
+        mark_dirty()
+
+    ttk.Button(contest_form, text="恢复自动（留空）",
+               command=reset_contest_times).grid(
+        row=4, column=1, sticky="w", padx=8, pady=(8, 4))
+
     notebook.add(cframe, text="比赛设置")
 
     # ---------------- bottom bar buttons ----------------
     def refetch() -> None:
-        nonlocal problem_rows, team_rows, team_meta
+        nonlocal problem_rows, team_rows, team_meta, meta
         if state["dirty"] and not messagebox.askyesno(
                 "重新拉取数据", "有未保存的修改，重新拉取将丢弃它们（颜色除外）。继续？",
                 parent=root):
             return
         try:
-            problems2, teams2 = _fetch_remote(conn, settings.pta_requests_per_second)
+            problems2, teams2, meta2 = _fetch_remote(
+                conn, settings.pta_requests_per_second)
         except PtaAuthError:
             messagebox.showerror("错误", "cookie 失效，请更新 manual/setup-connection.json",
                                  parent=root)
@@ -1022,12 +1184,13 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         except Exception as e:  # noqa: BLE001 - surface any fetch failure in-GUI
             messagebox.showerror("错误", f"拉取失败：{e}", parent=root)
             return
+        meta = meta2
+        apply_contest_prefill()
         old_colors = {r["label"]: {"color": r["color"], "rgb": r["rgb"]}
                       for r in problem_rows if r["changed"]}
         current_print = next((r["label"] for r in problem_rows if r["print"]),
                              None)
         problem_rows = build_problem_rows(problems2, old_colors, current_print)
-        flush_seat()
         old_meta = team_meta
         saved_teams = build_teams_setup(assignments, old_meta)
         team_rows = build_team_rows(teams2, group_defs, saved_teams)
@@ -1047,7 +1210,6 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         rebuild_print_panel()
         refresh_teams()
         refresh_groups()
-        load_team_meta()
 
     def save() -> None:
         if fa_mode_var.get() == "never":
@@ -1061,7 +1223,6 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         if not ok:
             messagebox.showerror("比赛设置", error, parent=root)
             return
-        flush_seat()
         problems_colors = {
             r["label"]: {"color": r["color"], "rgb": r["rgb"]}
             for r in problem_rows if r["changed"] and not r["print"]}
@@ -1085,14 +1246,14 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         root.destroy()
 
     def change_connection() -> None:
-        nonlocal problem_rows, team_rows, team_meta
+        nonlocal problem_rows, team_rows, team_meta, meta
         new_conn = launch_connection_dialog(root, settings, manual_dir,
                                             dict(conn))
         if new_conn is None:
             return
         try:
-            problems2, teams2 = _fetch_remote(new_conn,
-                                              settings.pta_requests_per_second)
+            problems2, teams2, meta2 = _fetch_remote(
+                new_conn, settings.pta_requests_per_second)
         except PtaAuthError:
             messagebox.showerror("错误", "cookie 失效", parent=root)
             return
@@ -1102,6 +1263,8 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         contest_changed = conn.get("contest_id") != new_conn.get("contest_id")
         conn.clear()
         conn.update(new_conn)
+        meta = meta2
+        apply_contest_prefill()
         old_colors = {r["label"]: {"color": r["color"], "rgb": r["rgb"]}
                       for r in problem_rows if r["changed"]}
         print_label = next((r["label"] for r in problem_rows if r["print"]),
@@ -1113,10 +1276,6 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
             assignments.clear()
             team_meta.clear()
             print_label = None
-        else:
-            # commit the in-flight seat edit before it is swept away by
-            # the rebuild below (and only when we are NOT clearing)
-            flush_seat()
         saved_teams = build_teams_setup(assignments, team_meta)
         problem_rows = build_problem_rows(problems2, old_colors, print_label)
         team_rows = build_team_rows(teams2, group_defs, saved_teams)
@@ -1135,7 +1294,6 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         rebuild_print_panel()
         refresh_teams()
         refresh_groups()
-        load_team_meta()
 
     ttk.Button(bar, text="↺ 重新拉取数据", command=refetch).pack(
         side="left", padx=4, pady=4)
@@ -1154,7 +1312,6 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
     refresh_groups()
     refresh_teams()
     set_team_headings()
-    load_team_meta()
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
 
@@ -1173,7 +1330,8 @@ def main() -> None:
             raise SystemExit(0)  # user cancelled
         saved = load_manual_setup(settings.manual_dir)
     try:
-        problems, teams = _fetch_remote(conn, settings.pta_requests_per_second)
+        problems, teams, meta = _fetch_remote(
+            conn, settings.pta_requests_per_second)
     except PtaAuthError:
         # connection may be stale — fall back to the dialog (dict(conn)
         # keeps the optional print_server prefilled too)
@@ -1181,8 +1339,9 @@ def main() -> None:
             None, settings, settings.manual_dir, dict(conn))
         if conn is None:
             raise SystemExit(1)
-        problems, teams = _fetch_remote(conn, settings.pta_requests_per_second)
-    launch_gui(settings, settings.manual_dir, problems, teams, saved, conn)
+        problems, teams, meta = _fetch_remote(
+            conn, settings.pta_requests_per_second)
+    launch_gui(settings, settings.manual_dir, problems, teams, meta, saved, conn)
 
 
 if __name__ == "__main__":

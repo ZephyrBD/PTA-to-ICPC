@@ -133,9 +133,9 @@ class Poller:
         # runs/files/sources would vanish from the rebuilt snapshot.
         self._detail_cache: dict[str, dict] = {}
         # pending-verdict count at the last warning (None = condition not
-        # active). `_build_state` runs every round, so the "ended but
-        # pending" log would otherwise fire every few seconds; warn once
-        # on entry and again only when the count changes.
+        # active). The contest finalizes at end + 5:00 regardless, but a
+        # still-unresolved verdict is worth surfacing once — dedupe on the
+        # count so the message fires on entry and again only when it changes.
         self._pending_warned: int | None = None
 
     def _set_rate_limit(self, retry_after: float) -> None:
@@ -366,15 +366,16 @@ class Poller:
     def _warn_pending_verdicts(self, data) -> None:
         """Log once when the contest has ended with unjudged submissions,
         and again only when the pending count changes (surfaces unknown PTA
-        statuses that silently block auto-finalization without spamming a
-        line every poll)."""
+        statuses that will be omitted — finalization itself is purely
+        time-based and does not wait on verdicts)."""
         pending = sum(1 for j in data.judgements.values()
                       if not j.get("judgement_type_id"))
         active = bool(data.state.get("ended")) \
             and data.state.get("end_of_updates") is None and pending > 0
         if active and pending != self._pending_warned:
-            log.warning("%d verdict(s) still pending; not finalizing",
-                        pending)
+            log.warning(
+                "%d verdict(s) still unresolved; finalizing at end + 5:00 "
+                "with them omitted", pending)
             self._pending_warned = pending
         elif not active:
             self._pending_warned = None

@@ -88,6 +88,58 @@ def _meta_start_time(meta: dict, tz: str) -> str | None:
     return to_iso_time(when.astimezone(parse_offset(tz)))
 
 
+def resolve_contest_times(manual_contest: dict | None, meta: dict,
+                          tz: str = "+08:00") -> dict:
+    """Resolve contest times exactly as ``_build_contest`` does, but WITHOUT
+    applying its built-in fallbacks: each key is emitted only when it has a
+    source (missing inputs omit the key; the caller supplies defaults).
+
+    Per key, ``manual_contest`` (saved override) wins over ``meta`` (freshly
+    fetched PTA data). ``scoreboard_freeze_duration`` is computed against the
+    RESOLVED duration — the saved manual ``duration`` when present, else the
+    PTA ``durationSeconds`` — never PTA's raw window, which may be longer
+    (live 2026-10-15: PTA 79h vs manual 31h; against PTA's end the freeze
+    landed at start − 42h). ``scoreboard_freeze_duration`` itself is only a
+    candidate here: a manual freeze wins, else hidingTimeMinutes is
+    subtracted from the resolved duration (clamped at 0, ``"0:00:00"`` a
+    legitimate result); with neither source the key is omitted — not even a
+    default — so callers can tell "no freeze" from "unset".
+
+    ``_build_contest`` and ``prefill_contest_times`` both delegate here so
+    "prefill then save unchanged" is a semantic no-op versus the server.
+    """
+    mc = dict(manual_contest or {})
+    meta = meta or {}
+    out: dict = {}
+    start = mc.get("start_time") or _meta_start_time(meta, tz)
+    if start:
+        out["start_time"] = start
+    duration = mc.get("duration")
+    if not duration:
+        seconds = meta.get("durationSeconds")
+        if seconds is not None:
+            duration = to_reltime(dt.timedelta(seconds=int(seconds)))
+    if duration:
+        out["duration"] = duration
+    freeze = mc.get("scoreboard_freeze_duration")
+    if not freeze:
+        hiding = meta.get("hidingTimeMinutes")
+        if hiding is not None and duration:
+            freeze = to_reltime(dt.timedelta(seconds=max(
+                0, parse_reltime(duration).total_seconds() - int(hiding) * 60)))
+    if freeze:
+        out["scoreboard_freeze_duration"] = freeze
+    return out
+
+
+def pta_contest_times(meta: dict, tz: str = "+08:00") -> dict:
+    """PTA-derived contest times as ``{"start_time", "duration",
+    "scoreboard_freeze_duration"}`` — the subset of keys whose inputs are
+    present (missing inputs omit their key; the caller supplies fallbacks).
+    Thin wrapper over ``resolve_contest_times`` with no manual override."""
+    return resolve_contest_times(None, meta, tz)
+
+
 def _build_contest(contest_id: str, manual_contest: dict | None,
                    meta: dict | None = None) -> dict:
     """manual explicit > contest meta (fetch_contest_meta) > built-in default
@@ -99,26 +151,16 @@ def _build_contest(contest_id: str, manual_contest: dict | None,
     """
     mc = dict(manual_contest or {})
     meta = meta or {}
-    tz = mc.get("pta_timezone", "+08:00")
-    start_time = mc.get("start_time") or _meta_start_time(meta, tz)
-    duration = mc.get("duration")
-    if not duration:
-        seconds = meta.get("durationSeconds")
-        duration = (to_reltime(dt.timedelta(seconds=int(seconds)))
-                    if seconds is not None else "5:00:00")
-    freeze = mc.get("scoreboard_freeze_duration")
-    if not freeze:
-        # PTA hidingTime = minutes AFTER start when the scoreboard hides;
-        # the Contest API duration is end-relative, so subtract from the
-        # RESOLVED duration (manual override wins above) — never from
-        # PTA's raw window, which may be longer (live 2026-10-15: PTA
-        # 79h vs manual 31h; against PTA's end the freeze landed at
-        # start − 42h). hidingTimeMinutes None → no freeze.
-        hiding = meta.get("hidingTimeMinutes")
-        freeze = ("0:00:00" if hiding is None else
-                  to_reltime(dt.timedelta(seconds=max(
-                      0, parse_reltime(duration).total_seconds()
-                      - int(hiding) * 60))))
+    resolved = resolve_contest_times(mc, meta, mc.get("pta_timezone", "+08:00"))
+    start_time = resolved.get("start_time")
+    duration = resolved.get("duration") or "5:00:00"
+    freeze = resolved.get("scoreboard_freeze_duration")
+    hiding = meta.get("hidingTimeMinutes")
+    if freeze is None:
+        # no manual freeze and no PTA hiding time → freeze explicitly off
+        freeze = "0:00:00" if hiding is None else to_reltime(dt.timedelta(
+            seconds=max(0, parse_reltime(duration).total_seconds()
+                        - int(hiding) * 60)))
     name = mc.get("name") or meta.get("name") or "contest"
     return {
         "id": contest_id,
@@ -132,12 +174,15 @@ def _build_contest(contest_id: str, manual_contest: dict | None,
     }
 
 
-def _build_state(contest: dict, now: dt.datetime, *, finalized_at=None,
-                 judgements: dict | None = None) -> dict:
+AUTO_FINALIZE_DELAY = dt.timedelta(minutes=5)
+
+
+def _build_state(contest: dict, now: dt.datetime, *, finalized_at=None) -> dict:
     # spec 2026-01 strict ordering: started < frozen < ended < thawed <
-    # end_of_updates and ended < finalized < end_of_updates. Times are all
-    # derived from `now` (never a future timestamp) so a finalized contest
-    # also satisfies "must not change" once the poll freezes it.
+    # end_of_updates and ended < finalized < end_of_updates. Emitted times
+    # are derived from the contest's own start/end (never later than `now`,
+    # see the auto branch) so a finalized contest also satisfies "must not
+    # change" once the poll freezes it.
     state = {"started": None, "ended": None, "frozen": None,
              "thawed": None, "finalized": None, "end_of_updates": None}
     start_s = contest.get("start_time")
@@ -162,25 +207,30 @@ def _build_state(contest: dict, now: dt.datetime, *, finalized_at=None,
         if not (isinstance(finalized_at, str)
                 and finalized_at.strip() == "auto"):
             log.warning("unparseable contest.finalized_at; using auto rule")
-    jlist = list((judgements or {}).values())
-    pending = [j for j in jlist if not j.get("judgement_type_id")]
     if mode == "auto":
-        # vacuous "all judged" is impossible: zero submissions never
-        # auto-finalize (an explicit timestamp is the escape hatch).
-        # `now` is UTC-aware (poller) while `end` carries the contest
-        # offset — compare AWARE datetimes (string compare would be
-        # offset-sensitive and delay/fire early), then emit in the contest
-        # offset at whole-second precision so the strict
-        # `ended < finalized/thawed < end_of_updates` holds as strings too.
-        if jlist and not pending and state["ended"] is not None:
-            now_s = now.replace(microsecond=0)
-            base = now_s - dt.timedelta(seconds=1)
-            if base > end:
-                base_l = base.astimezone(tz)
+        # purely time-based: finalize once `now` reaches end + 5:00 + 1s,
+        # regardless of submissions/verdicts (zero submissions and
+        # still-pending verdicts both finalize; late verdicts are dropped
+        # once the store freezes). `now` is UTC-aware (poller) while `end`
+        # carries the contest offset — compare AWARE datetimes (string
+        # compare would be offset-sensitive and fire early/late), then
+        # emit in the contest offset at whole-second precision so the
+        # strict `ended < finalized/thawed < end_of_updates` holds as
+        # strings too.
+        if state["ended"] is not None:
+            # normalize the deadline to a whole second (parse_reltime can
+            # carry float noise for sub-second-precision durations) so the
+            # T + 5:00 and T + 5:01 emit points are exact and the "not fired
+            # at exactly end + 5:00" boundary is deterministic regardless of
+            # the duration's fractional part; emitted times are whole-second.
+            threshold = (end + AUTO_FINALIZE_DELAY).replace(microsecond=0)
+            if now >= threshold + dt.timedelta(seconds=1):
+                base_l = threshold.astimezone(tz)
                 if state["frozen"] is not None:
                     state["thawed"] = to_iso_time(base_l)
                 state["finalized"] = to_iso_time(base_l)
-                state["end_of_updates"] = to_iso_time(now_s.astimezone(tz))
+                state["end_of_updates"] = to_iso_time(
+                    (threshold + dt.timedelta(seconds=1)).astimezone(tz))
     elif mode == "at" and when is not None:
         if now >= end:
             # max() over aware datetimes is offset-safe; `when` is aware
@@ -431,11 +481,10 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
                     "exit_code": r.get("exitcode"),
                     "judge_time": to_iso_time(ts),
                 }
-    # state is built after the loop: auto-finalization needs the full
-    # verdict set (a null judgement_type_id blocks it)
+    # state is built after the loop; auto-finalization is purely time-based
+    # (ended + 5:00), so the verdict set does not affect it
     data.state = _build_state(data.contest, now,
-                              finalized_at=mc.get("finalized_at"),
-                              judgements=data.judgements)
+                              finalized_at=mc.get("finalized_at"))
     # persons from manual team members/coaches: reference integrity first —
     # a person is only emitted when its team survived into data.teams.
     for tid, i, name, role in pending_persons:

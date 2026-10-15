@@ -7,12 +7,18 @@ import pta2ccs.setup as setup
 from pta2ccs.setup import (
     _residual_config_prefill,
     allocate_group_id,
+    apply_team_edit,
+    apply_team_meta,
     build_contest_setup,
     build_problem_rows,
     build_team_rows,
     build_teams_setup,
     fetch_setup_data,
     load_manual_setup,
+    merge_contest_prefill,
+    normalize_team_meta,
+    prefill_contest_times,
+    render_team_seat,
     sort_team_rows,
     sort_teams_by_label,
     toggle_print_problem,
@@ -21,6 +27,7 @@ from pta2ccs.setup import (
     write_contest_setup,
     write_manual_setup,
 )
+from pta2ccs.translate import _build_contest
 
 
 def test_import_setup_does_not_require_display():
@@ -209,11 +216,16 @@ class _StubClient:
     async def fetch_teams(self):
         return [{"id": "t1", "name": "甲", "label": "2023001"}]
 
+    async def fetch_contest_meta(self):
+        return {"name": "赛", "startAt": "2026-10-13T08:00:00Z",
+                "durationSeconds": 111600, "hidingTimeMinutes": 360}
 
-def test_fetch_setup_data_returns_problems_and_teams():
-    problems, teams = asyncio.run(fetch_setup_data(_StubClient()))
+
+def test_fetch_setup_data_returns_problems_teams_and_meta():
+    problems, teams, meta = asyncio.run(fetch_setup_data(_StubClient()))
     assert problems[0]["label"] == "A"
     assert teams[0]["id"] == "t1"
+    assert meta["durationSeconds"] == 111600
 
 
 # ---------------------------------------------------------------------------
@@ -503,3 +515,214 @@ def test_load_manual_setup_contest_ignores_non_dict(tmp_path):
     (tmp_path / setup.SETUP_CONTEST_FILE).write_text(
         json.dumps({"contest": "nope"}), encoding="utf-8")
     assert load_manual_setup(tmp_path)["contest"] == {}
+
+
+# --- 座位号 sort column (task 23) ------------------------------------------
+
+def test_sort_team_rows_seat():
+    rows = [{"label": "1", "seat": ""}, {"label": "2", "seat": "A12"},
+            {"label": "3", "seat": "a3"}]
+    out = sort_team_rows(rows, "seat")
+    # casefolded strings: "" < "a12" < "a3"
+    assert [r["label"] for r in out] == ["1", "2", "3"]
+
+
+def test_build_team_rows_seat_column_present():
+    rows = build_team_rows(
+        [{"id": "t1", "name": "甲", "label": "2023001"}], {},
+        {"t1": {"seat": "B7"}})
+    assert rows[0]["seat"] == "B7"  # seat is the value of the 座位号 column
+
+
+# --- prefill_contest_times / merge_contest_prefill (task 23) --------------
+
+_META = {"startAt": "2026-10-13T08:00:00Z", "durationSeconds": 111600,
+         "hidingTimeMinutes": 360}
+
+
+# 79h window (111600*2 = 223200s) + 360min hiding, mirroring the live
+# 2026-10-15 case where a saved 31h duration must drive the freeze.
+_META_79H = {"startAt": "2026-10-15T02:00:00Z",
+             "durationSeconds": 223200, "hidingTimeMinutes": 360}
+
+
+def test_prefill_contest_times_saved_wins():
+    saved = {"start_time": "2026-01-01T00:00:00+08:00", "duration": "1:00:00"}
+    out = prefill_contest_times(_META, saved)
+    assert out["start_time"] == "2026-01-01T00:00:00+08:00"  # saved wins
+    assert out["duration"] == "1:00:00"                      # saved wins
+    # freeze rides the RESOLVED (saved) duration: 1h − 6h hides at/after the
+    # start → clamped to 0; the box shows blank (= 封榜关闭) rather than the
+    # literal "0:00:00", which validate_contest_times (:302) rejects.
+    assert out["scoreboard_freeze_duration"] == ""
+
+
+def test_prefill_zero_freeze_is_blank_and_savable():
+    # regression: PTA 31h window, hiding 360min, saved duration 1h → resolved
+    # freeze clamps to 0. The prefilled box must be blank so an untouched
+    # "prefill then save" succeeds instead of being rejected as "封榜时长必须大于 0".
+    saved = {"duration": "1:00:00"}
+    out = prefill_contest_times(_META, saved)
+    assert out["scoreboard_freeze_duration"] == ""
+    ok, err, payload = validate_contest_times(
+        out["start_time"], out["duration"], out["scoreboard_freeze_duration"], "")
+    assert ok, err
+    # blank freeze → 封榜关闭: no explicit key, server still resolves 0:00:00
+    assert "scoreboard_freeze_duration" not in payload["contest"]
+    assert _build_contest("c1", payload["contest"], _META)[
+        "scoreboard_freeze_duration"] == "0:00:00"
+
+
+def test_prefill_freeze_uses_saved_duration_not_pta_window():
+    # regression: PTA window 79h, hiding 360min, saved duration 31h. Computing
+    # the freeze against PTA's raw window yields 73h (> the 31h duration) and
+    # would place `frozen` 42h BEFORE `started`.
+    saved = {"duration": "31:00:00"}
+    out = prefill_contest_times(_META_79H, saved)
+    assert out["duration"] == "31:00:00"
+    assert out["scoreboard_freeze_duration"] == "25:00:00"
+
+
+def test_prefill_freeze_save_unchanged_matches_server_resolution():
+    # "prefill then save unchanged" must be a semantic no-op: feeding the
+    # prefilled values back as the manual override must reproduce the same
+    # resolved times the server would emit.
+    saved = {"duration": "31:00:00"}
+    prefilled = prefill_contest_times(_META_79H, saved)
+    resolved = _build_contest("c1", dict(saved), _META_79H)
+    assert resolved["duration"] == prefilled["duration"]
+    assert (resolved["scoreboard_freeze_duration"]
+            == prefilled["scoreboard_freeze_duration"] == "25:00:00")
+
+
+def test_prefill_contest_times_pta_when_no_saved():
+    out = prefill_contest_times(_META, None)
+    assert out == {"start_time": "2026-10-13T16:00:00+08:00",
+                   "duration": "31:00:00",
+                   "scoreboard_freeze_duration": "25:00:00"}
+
+
+def test_prefill_contest_times_both_blank_is_empty():
+    out = prefill_contest_times({}, {"start_time": "", "duration": "",
+                                     "scoreboard_freeze_duration": ""})
+    assert out == {"start_time": "", "duration": "",
+                   "scoreboard_freeze_duration": ""}
+
+
+def test_prefill_contest_times_uses_tz():
+    out = prefill_contest_times(_META, {}, tz="+00:00")
+    assert out["start_time"] == "2026-10-13T08:00:00+00:00"
+
+
+def test_merge_contest_prefill_updates_untouched_edited_survives():
+    current = {"start_time": "X-user", "duration": "31:00:00",
+               "scoreboard_freeze_duration": ""}
+    last = {"start_time": "", "duration": "31:00:00",
+            "scoreboard_freeze_duration": ""}
+    new = {"start_time": "T", "duration": "D",
+           "scoreboard_freeze_duration": "F"}
+    out = merge_contest_prefill(current, last, new)
+    # start_time was edited (current != last) → user edit survives
+    assert out["values"]["start_time"] == "X-user"
+    # duration/freeze were untouched → updated to the new prefill
+    assert out["values"]["duration"] == "D"
+    assert out["values"]["scoreboard_freeze_duration"] == "F"
+    assert out["prefill"] == new
+
+
+def test_merge_contest_prefill_all_untouched():
+    current = {"start_time": "a", "duration": "b",
+               "scoreboard_freeze_duration": "c"}
+    out = merge_contest_prefill(current, dict(current),
+                                {"start_time": "x", "duration": "y",
+                                 "scoreboard_freeze_duration": "z"})
+    assert out["values"] == {"start_time": "x", "duration": "y",
+                             "scoreboard_freeze_duration": "z"}
+
+
+def test_refetch_does_not_clobber_user_edit():
+    # exercises the GUI's exact refetch sequence: the current values must be
+    # re-read from the live boxes (StringVars) at merge time, not remembered
+    # from the previous prefill — otherwise the "edited" branch is dead and a
+    # refetch silently reverts a typed start time.
+    fields = {"start_time": "2026-10-15T02:00:00+00:00", "duration": "31:00:00",
+              "scoreboard_freeze_duration": "25:00:00"}
+    last_prefill = dict(fields)
+    # user retypes the start time in the box
+    fields["start_time"] = "2026-10-15T03:30:00+00:00"
+
+    def collect():  # mirrors setup.collect_contest_prefill()
+        return dict(fields)
+
+    new_prefill = {"start_time": "2026-10-15T02:00:00+00:00",
+                   "duration": "31:00:00",
+                   "scoreboard_freeze_duration": "25:00:00"}
+    merged = merge_contest_prefill(collect(), last_prefill, new_prefill)
+    assert merged["values"]["start_time"] == "2026-10-15T03:30:00+00:00"  # kept
+    assert merged["values"]["duration"] == "31:00:00"
+
+
+# --- normalize_team_meta / apply_team_meta (task 23) ----------------------
+
+def test_normalize_team_meta_strips_and_drops_blanks():
+    out = normalize_team_meta(" A12 ", ["甲", "", " 乙 "], ["", "丙"])
+    assert out == {"seat": "A12", "members": ["甲", "乙"],
+                   "coaches": ["丙"]}
+
+
+def test_normalize_team_meta_empty():
+    assert normalize_team_meta(None, None, None) == {
+        "seat": "", "members": [], "coaches": []}
+
+
+def test_apply_team_meta_writes_normalized():
+    team_meta: dict = {}
+    apply_team_meta(team_meta, "t1", {"seat": " B7 ", "members": ["甲", ""],
+                                      "coaches": [" 教练 "]})
+    assert team_meta["t1"] == {"seat": "B7", "members": ["甲"],
+                               "coaches": ["教练"]}
+
+
+def test_render_team_seat_prefers_team_meta_over_stale_row():
+    # the table row was built before the dialog edit; the rendered seat must
+    # come from team_meta so 确定 shows immediately (row["seat"] is stale).
+    row = {"id": "t1", "seat": "old"}
+    team_meta = {"t1": {"seat": "new", "members": [], "coaches": []}}
+    assert render_team_seat(team_meta, row) == "new"
+
+
+def test_render_team_seat_falls_back_to_row_until_edited():
+    row = {"id": "t1", "seat": "B7"}
+    assert render_team_seat({}, row) == "B7"
+
+
+def test_render_team_seat_blank_edit_wins():
+    # an edit that clears the seat must show blank, not the stale row value
+    row = {"id": "t1", "seat": "old"}
+    team_meta = {"t1": {"seat": "", "members": [], "coaches": []}}
+    assert render_team_seat(team_meta, row) == ""
+
+
+def test_apply_team_edit_mirrors_seat_into_row_so_sort_agrees():
+    # after 确定 the seat sort key (row["seat"]) must equal the rendered cell
+    # (team_meta) — otherwise a 座位号 sort orders rows inconsistently with
+    # the column shown before the next refetch.
+    rows = [{"id": "t1", "seat": "Z"}, {"id": "t2", "seat": "M"},
+            {"id": "t3", "seat": "A"}]
+    team_meta = {r["id"]: {"seat": r["seat"], "members": [], "coaches": []}
+                 for r in rows}
+    apply_team_edit(team_meta, rows, "t1", {"seat": "A0", "members": ["甲"],
+                                            "coaches": []})
+    assert next(r for r in rows if r["id"] == "t1")["seat"] == "A0"
+    by_rendered = [render_team_seat(team_meta, r)
+                   for r in sort_team_rows(rows, "seat")]
+    assert by_rendered == sorted(by_rendered, key=str.casefold)
+    assert by_rendered == ["A", "A0", "M"]
+
+
+def test_apply_team_edit_missing_row_is_noop_on_rows():
+    team_meta: dict = {}
+    rows = [{"id": "t2", "seat": "A"}]
+    apply_team_edit(team_meta, rows, "t1", {"seat": "B7"})
+    assert team_meta["t1"]["seat"] == "B7"
+    assert rows == [{"id": "t2", "seat": "A"}]  # untouched, no KeyError
