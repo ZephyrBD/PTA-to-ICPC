@@ -274,34 +274,35 @@ class PtaClient:
 
         Freeze: problemSetConfig.hideScoreboard + hidingTime (minutes AFTER
         the contest STARTS — user-confirmed 2026-10-14, correcting the
-        earlier end-relative reading). The Contest API's
-        scoreboard_freeze_duration is measured from the END, so the
-        conversion subtracts: max(0, durationSeconds − hidingTime×60).
-        Live values: 111600 − 360×60 = 90000 (25:00:00; frozen at
-        start+6h). 0 when hideScoreboard is falsy, duration is unknown, or
-        hidingTime ≥ duration. Compilers are raw enums — translate maps
-        them through COMPILER_LANGUAGES. startAt/endAt stay in PTA's
-        ISO-8601 UTC form; translate attaches pta_timezone.
+        earlier end-relative reading). The raw minutes pass through as
+        `hidingTimeMinutes` (None when hiding is off): the Contest API's
+        scoreboard_freeze_duration is end-relative and must be computed
+        against the FINAL duration in translate — the manual override may
+        shorten the contest (live 2026-10-15: PTA window 79h vs manual
+        31h), so computing it here against PTA's duration froze the
+        scoreboard relative to the wrong end (start − 42h). Compilers are
+        raw enums — translate maps them through COMPILER_LANGUAGES.
+        startAt/endAt stay in PTA's ISO-8601 UTC form; translate attaches
+        pta_timezone.
         """
         data = await self._get_json(self.contest_meta_url)
         ps = data.get("problemSet") or {}
         cfg = ps.get("problemSetConfig") or {}
         duration = ps.get("duration")
         duration_s = int(duration) if duration is not None else None
-        freeze_s = 0
-        if cfg.get("hideScoreboard") and duration_s is not None:
+        hiding_minutes: int | None = None
+        if cfg.get("hideScoreboard"):
             try:
-                freeze_minutes = max(0, int(cfg.get("hidingTime") or 0))
-                freeze_s = max(0, duration_s - freeze_minutes * 60)
+                hiding_minutes = max(0, int(cfg.get("hidingTime") or 0))
             except (TypeError, ValueError):
-                freeze_s = 0
+                hiding_minutes = None
         return {
             "name": ps.get("name"),
             "startAt": ps.get("startAt"),
             "endAt": ps.get("endAt"),
             "durationSeconds": duration_s,
             "compilers": [str(c) for c in (cfg.get("compilers") or [])],
-            "scoreboardFreezeSeconds": freeze_s,
+            "hidingTimeMinutes": hiding_minutes,
         }
 
     async def fetch_submission_detail(self, sub_id: str) -> dict:

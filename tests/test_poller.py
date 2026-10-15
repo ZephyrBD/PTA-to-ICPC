@@ -23,13 +23,14 @@ class FakeClient:
             "organization_name": "DSA_2024",
         }]
         self.teams_calls = 0
-        # live-shaped meta: start-relative freeze (111600 − 360×60 = 90000
-        # = 25h) + contest name + two compilers; times None so the manual
+        # live-shaped meta: raw freeze input (hidingTime 360 min AFTER
+        # start; translate derives 31h − 6h = 25h from the final duration)
+        # + contest name + two compilers; times None so the manual
         # contest block keeps providing start/duration
         self.meta = {
             "name": "示例比赛",
             "startAt": None, "endAt": None, "durationSeconds": None,
-            "compilers": ["GXX", "JAVAC"], "scoreboardFreezeSeconds": 90000,
+            "compilers": ["GXX", "JAVAC"], "hidingTimeMinutes": 360,
         }
         self.meta_calls = 0
         # per-submission detail (task 13): call counter + failure set
@@ -77,7 +78,7 @@ def make_poller(config_poll_seconds: float = 0.01,
     client = FakeClient()
     store = Store()
     manual = {"contest": {"start_time": "2023-05-21T09:00:00+08:00",
-                          "duration": "5:00:00", "pta_timezone": "+08:00"}}
+                          "duration": "31:00:00", "pta_timezone": "+08:00"}}
     return Poller(client, store, settings, manual, contest_id="c1"), client, store
 
 
@@ -165,7 +166,8 @@ def test_contest_meta_fetched_once_and_freeze_reaches_snapshot():
     asyncio.run(poller.poll_once())
     assert client.meta_calls == 1
     snap = store.snapshot()
-    # manual has no scoreboard_freeze_duration → meta's 25h freeze applies
+    # manual has no scoreboard_freeze_duration → meta hiding 360 min vs
+    # manual duration 31:00:00 → 31h − 6h = 25h freeze
     assert snap.contest["scoreboard_freeze_duration"] == "25:00:00"
     assert snap.state["frozen"] is not None
     # manual has no name → problemSet.name from the API

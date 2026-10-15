@@ -97,9 +97,17 @@ def _build_contest(contest_id: str, manual_contest: dict | None,
                     if seconds is not None else "5:00:00")
     freeze = mc.get("scoreboard_freeze_duration")
     if not freeze:
-        f_seconds = meta.get("scoreboardFreezeSeconds")
-        freeze = (to_reltime(dt.timedelta(seconds=int(f_seconds)))
-                  if f_seconds is not None else "0:00:00")
+        # PTA hidingTime = minutes AFTER start when the scoreboard hides;
+        # the Contest API duration is end-relative, so subtract from the
+        # RESOLVED duration (manual override wins above) — never from
+        # PTA's raw window, which may be longer (live 2026-10-15: PTA
+        # 79h vs manual 31h; against PTA's end the freeze landed at
+        # start − 42h). hidingTimeMinutes None → no freeze.
+        hiding = meta.get("hidingTimeMinutes")
+        freeze = ("0:00:00" if hiding is None else
+                  to_reltime(dt.timedelta(seconds=max(
+                      0, parse_reltime(duration).total_seconds()
+                      - int(hiding) * 60))))
     name = mc.get("name") or meta.get("name") or "contest"
     return {
         "id": contest_id,

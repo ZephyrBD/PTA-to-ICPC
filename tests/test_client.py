@@ -281,9 +281,10 @@ def test_fetch_submission_detail_defensive_shapes():
 
 
 def test_fetch_contest_meta():
-    """GET /api/problem-sets/{id} → name/freeze/compilers/times (findings §5,
-    live-verified 2026-10-14: hidingTime 360 min AFTER start, duration 111600
-    → 111600 − 21600 = 90000 s = 25:00:00 freeze)."""
+    """GET /api/problem-sets/{id} → name/hiding/compilers/times (findings §5,
+    live-verified 2026-10-14: hidingTime 360 min AFTER start — passed through
+    raw; translate converts to the end-relative freeze against the final
+    duration)."""
     payload = load("contest_meta.json")
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -297,14 +298,15 @@ def test_fetch_contest_meta():
     assert meta["endAt"] == ps["endAt"] == "2026-10-14T15:00:00Z"
     assert meta["durationSeconds"] == 111600
     assert isinstance(meta["durationSeconds"], int)
-    # start-relative freeze: duration − hidingTime×60 (NOT hidingTime×60)
-    assert meta["scoreboardFreezeSeconds"] == 111600 - 360 * 60 == 90000
+    # raw start-relative freeze input, not an end-relative conversion
+    assert meta["hidingTimeMinutes"] == 360
     assert meta["compilers"] == ps["problemSetConfig"]["compilers"]
     assert all(isinstance(c, str) for c in meta["compilers"])
 
 
 def test_fetch_contest_meta_scoreboard_not_hidden():
-    """hideScoreboard false → freeze 0 even with a stale hidingTime."""
+    """hideScoreboard false → hidingTimeMinutes None even with a stale
+    hidingTime."""
     payload = load("contest_meta.json")
     cfg = payload["problemSet"]["problemSetConfig"]
     cfg["hideScoreboard"] = False
@@ -314,12 +316,13 @@ def test_fetch_contest_meta_scoreboard_not_hidden():
         return httpx.Response(200, json=payload)
 
     meta = fetch_contest_meta(make_client(handle))
-    assert meta["scoreboardFreezeSeconds"] == 0
+    assert meta["hidingTimeMinutes"] is None
 
 
 @pytest.mark.parametrize("hiding_time", [111600, 120000])
-def test_fetch_contest_meta_hiding_time_at_or_over_duration(hiding_time: int):
-    """hidingTime ≥ duration → freeze 0 (max(0, duration − hidingTime×60))."""
+def test_fetch_contest_meta_hiding_time_passed_through(hiding_time: int):
+    """Raw passthrough: the client never clamps hidingTime against the
+    duration (translate does, against the FINAL duration)."""
     payload = load("contest_meta.json")
     payload["problemSet"]["problemSetConfig"]["hidingTime"] = hiding_time
 
@@ -327,11 +330,12 @@ def test_fetch_contest_meta_hiding_time_at_or_over_duration(hiding_time: int):
         return httpx.Response(200, json=payload)
 
     meta = fetch_contest_meta(make_client(handle))
-    assert meta["scoreboardFreezeSeconds"] == 0
+    assert meta["hidingTimeMinutes"] == hiding_time
 
 
 def test_fetch_contest_meta_hidden_but_duration_unknown():
-    """hideScoreboard true + no duration → cannot compute → freeze 0."""
+    """hideScoreboard true + no duration → hiding still passes through
+    (duration is translate's concern now)."""
     payload = {"problemSet": {"problemSetConfig": {
         "hideScoreboard": True, "hidingTime": 360}}}
 
@@ -340,7 +344,7 @@ def test_fetch_contest_meta_hidden_but_duration_unknown():
 
     meta = fetch_contest_meta(make_client(handle))
     assert meta["durationSeconds"] is None
-    assert meta["scoreboardFreezeSeconds"] == 0
+    assert meta["hidingTimeMinutes"] == 360
 
 
 def test_fetch_contest_meta_absent_duration_and_config():
@@ -352,7 +356,7 @@ def test_fetch_contest_meta_absent_duration_and_config():
     meta = fetch_contest_meta(make_client(handle))
     assert meta == {
         "name": None, "startAt": None, "endAt": None, "durationSeconds": None,
-        "compilers": [], "scoreboardFreezeSeconds": 0,
+        "compilers": [], "hidingTimeMinutes": None,
     }
 
 

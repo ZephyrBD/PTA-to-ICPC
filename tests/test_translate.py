@@ -52,14 +52,14 @@ ROSTER = [
 ]
 
 # fetch_contest_meta() shape (live 2026-10-14: hidingTime 360 min AFTER start,
-# duration 111600 s → freeze = 111600 − 360×60 = 90000 s = 25:00:00)
+# passed through raw; freeze = final duration − 360×60 = 90000 s = 25:00:00)
 META = {
     "name": "示例比赛",
     "startAt": "2026-10-13T08:00:00Z",
     "endAt": "2026-10-14T15:00:00Z",
     "durationSeconds": 111600,
     "compilers": ["GXX", "JAVAC", "CANGJIE"],
-    "scoreboardFreezeSeconds": 90000,
+    "hidingTimeMinutes": 360,
 }
 
 
@@ -343,12 +343,38 @@ def test_empty_manual_name_falls_through_to_meta():
 
 
 def test_zero_meta_freeze_renders_zero_duration_and_never_frozen():
-    """Client edge cases (hideScoreboard false / hidingTime ≥ duration /
-    durationSeconds unknown) all collapse to scoreboardFreezeSeconds 0 →
-    translate renders "0:00:00" and state.frozen stays None."""
+    """Client edge cases (hideScoreboard false / bad hidingTime) collapse
+    to hidingTimeMinutes None → translate renders "0:00:00" and
+    state.frozen stays None."""
     data = translate("999", {"contest": {"start_time": "2026-10-13T16:00:00+08:00",
                                          "duration": "31:00:00", "pta_timezone": TZ}},
-                     [], [], None, NOW, meta=dict(META, scoreboardFreezeSeconds=0))
+                     [], [], None, NOW, meta=dict(META, hidingTimeMinutes=None))
+    assert data.contest["scoreboard_freeze_duration"] == "0:00:00"
+    assert data.state["frozen"] is None
+
+
+def test_manual_duration_shortens_freeze_timebase():
+    """Regression (live 2026-10-15): PTA window 79h (durationSeconds 284400),
+    hidingTime 360 min after start, manual duration 31:00:00 — the freeze
+    must be computed against the MANUAL duration: 31h − 6h = 25:00:00 with
+    frozen at start+6h, NOT against PTA's end (73:00:00 → start − 42h)."""
+    manual = {"contest": {"start_time": "2026-10-13T16:00:00+08:00",
+                          "duration": "31:00:00", "pta_timezone": TZ}}
+    meta = dict(META, durationSeconds=284400)
+    data = translate("999", manual, [], [], None, NOW, meta=meta)
+    c = data.contest
+    assert c["duration"] == "31:00:00"                    # manual wins
+    assert c["scoreboard_freeze_duration"] == "25:00:00"   # 31h − 6h
+    assert data.state["frozen"] == "2026-10-13T22:00:00+08:00"  # start + 6h
+
+
+def test_hiding_time_at_or_over_duration_clamps_to_zero():
+    """hidingTime ≥ the final duration → freeze clamps to "0:00:00"
+    (freeze would start at/after the end; state.frozen stays None)."""
+    manual = {"contest": {"start_time": "2026-10-13T16:00:00+08:00",
+                          "duration": "5:00:00", "pta_timezone": TZ}}
+    data = translate("999", manual, [], [], None, NOW,
+                     meta=dict(META, hidingTimeMinutes=360))  # 6h > 5h
     assert data.contest["scoreboard_freeze_duration"] == "0:00:00"
     assert data.state["frozen"] is None
 

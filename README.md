@@ -14,7 +14,7 @@
 以下数据全部按 `manual/setup-connection.json` 里的 `contest_id` 从 PTA API 自动获取，无需手工维护：
 
 - 比赛名、开赛/结束时间、比赛时长（`GET /api/problem-sets/{id}`）
-- 封榜时长（`hideScoreboard` + `hidingTime`，按"开赛后 X 分钟封榜"换算）
+- 封榜时长（`hideScoreboard` + `hidingTime`，按"开赛后 X 分钟封榜"换算；基于**最终** duration 计算，manual 覆盖 duration 后仍正确）
 - 全部可用编译器 → `/languages`（38 种，随 PTA 配置变化）
 - 题目列表、全量选手花名册 → `/teams`；PTA 用户组只映射到 `/organizations`（学校），**不再**生成 `/groups`
 
