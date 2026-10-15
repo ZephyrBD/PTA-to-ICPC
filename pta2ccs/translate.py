@@ -151,7 +151,15 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
         if k in data.judgement_types:
             data.judgement_types[k].update(v)
 
+    # manual print-problem hide (task 20): the poller already filters, but
+    # manual JSON can re-introduce the problem — skip defensively. Truthy
+    # guard first: manual_print None must never match a missing label/id.
+    manual_print = (manual.get("options") or {}).get("print_problem")
+
     for i, p in enumerate(raw_problems):
+        if manual_print and (p.get("label") == manual_print
+                             or p.get("id") == manual_print):
+            continue
         pid = sanitize_id(str(p.get("id", i)))
         color, rgb = PALETTE[i % len(PALETTE)]
         entry = data.problems.get(pid, {})
@@ -220,6 +228,8 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
 
     start = dt.datetime.fromisoformat(data.contest["start_time"]) if data.contest["start_time"] else None
     for row in raw_submissions:
+        if manual_print and row.get("problem_index") == manual_print:
+            continue  # print-problem defensive skip (task 20)
         try:
             ts = parse_pta_time(row["submit_time"], tz)
         except (KeyError, ValueError, TypeError) as e:

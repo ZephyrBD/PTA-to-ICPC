@@ -90,6 +90,12 @@ def test_load_connection_malformed_json(tmp_path: Path):
     assert load_connection(tmp_path) is None
 
 
+def test_load_connection_invalid_utf8(tmp_path: Path):
+    # never raises: UnicodeDecodeError is a ValueError subclass (task 20 nit)
+    (tmp_path / "setup-connection.json").write_bytes(b"\xff\xfe{broken")
+    assert load_connection(tmp_path) is None
+
+
 @pytest.mark.parametrize("payload", [
     {"contest_id": "", "pta_cookie": "cookie"},
     {"contest_id": "1234567890", "pta_cookie": ""},
@@ -196,3 +202,21 @@ def test_load_manual_scalar_overrides_fails(tmp_path: Path):
     with pytest.raises(SystemExit) as excinfo:
         load_manual(mdir)
     assert excinfo.value.code == 1
+
+
+def test_load_manual_print_problem_surfaces_under_options(tmp_path: Path):
+    mdir = tmp_path / "manual"
+    write_manual(mdir, "setup-problems.json", {"print_problem": "1-3"})
+    assert load_manual(mdir)["options"] == {"print_problem": "1-3"}
+
+
+def test_load_manual_print_problem_null_value(tmp_path: Path):
+    mdir = tmp_path / "manual"
+    write_manual(mdir, "setup-problems.json", {"print_problem": None})
+    assert load_manual(mdir)["options"] == {"print_problem": None}
+
+
+def test_load_manual_options_default_empty(tmp_path: Path):
+    mdir = tmp_path / "manual"
+    write_manual(mdir, "a.json", {"teams": {"D22": {"name": "x"}}})
+    assert load_manual(mdir)["options"] == {}

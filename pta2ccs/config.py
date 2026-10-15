@@ -52,7 +52,7 @@ def load_connection(manual_dir: Path) -> dict[str, str] | None:
     path = manual_dir / "setup-connection.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # JSONDecodeError + UnicodeDecodeError
         return None
     if not isinstance(data, dict):
         return None
@@ -77,6 +77,10 @@ def load_manual(manual_dir: Path) -> dict:
         "problems": {},
         "languages": {},
         "judgement_types_overrides": {},
+        # non-section top-level options from manual files (task 20): e.g.
+        # print_problem ("1-3" | null) in setup-problems.json, which the
+        # poller reads to drop that problem's data before translate
+        "options": {},
     }
     if not manual_dir.exists():
         return merged
@@ -98,6 +102,8 @@ def load_manual(manual_dir: Path) -> dict:
             if not isinstance(overrides, dict):
                 _fail(f"judgement_types.overrides in {f} must be an object")
             merged["judgement_types_overrides"].update(overrides)
+        if "print_problem" in data:  # str label or null; later file wins
+            merged["options"]["print_problem"] = data["print_problem"]
         for key in _ID_SECTIONS:
             section = data.get(key)
             if section is None:

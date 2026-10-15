@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from pta2ccs.app import _ConnectedSettings
-from pta2ccs.poller import Poller
+from pta2ccs.config import Settings
+from pta2ccs.poller import Poller, drop_print_problem
 from pta2ccs.pta.client import PtaRateLimitError
 from pta2ccs.store import Store
 
@@ -71,15 +71,14 @@ class FakeClient:
 
 def make_poller(config_poll_seconds: float = 0.01,
                 **settings_overrides) -> tuple[Poller, FakeClient, Store]:
-    settings = _ConnectedSettings(contest_id="1", pta_cookie="c",
-                                  poll_interval_seconds=0.01,
-                                  config_poll_seconds=config_poll_seconds,
-                                  **settings_overrides)
+    settings = Settings(poll_interval_seconds=0.01,
+                        config_poll_seconds=config_poll_seconds,
+                        **settings_overrides)
     client = FakeClient()
     store = Store()
     manual = {"contest": {"start_time": "2023-05-21T09:00:00+08:00",
                           "duration": "5:00:00", "pta_timezone": "+08:00"}}
-    return Poller(client, store, settings, manual), client, store
+    return Poller(client, store, settings, manual, contest_id="c1"), client, store
 
 
 def test_poll_once_populates_store():
@@ -352,3 +351,83 @@ def test_non_config_rounds_keep_problem_limits():
     assert snap.problems["A"]["memory_limit"] == 256000
     assert snap.problems["A"]["code_limit"] == 64
     assert snap.problems["A"]["test_data_count"] == 3
+
+
+# --- print-problem drop (task 20) --------------------------------------------
+
+def test_drop_print_problem_filters_label():
+    subs = [{"id": "1", "problem_index": "1-3"},
+            {"id": "2", "problem_index": "1-4"}]
+    probs = [{"id": "1-3", "label": "1-3"}, {"id": "1-4", "label": "1-4"}]
+    kept_subs, kept_probs = drop_print_problem(subs, probs, "1-3")
+    assert [r["id"] for r in kept_subs] == ["2"]
+    assert [p["id"] for p in kept_probs] == ["1-4"]
+    # new lists; inputs untouched
+    assert kept_subs is not subs and kept_probs is not probs
+    assert len(subs) == 2 and len(probs) == 2
+
+
+@pytest.mark.parametrize("print_label", [None, ""])
+def test_drop_print_problem_none_or_empty_is_noop(print_label):
+    subs = [{"id": "1", "problem_index": "1-3"}]
+    probs = [{"id": "1-3", "label": "1-3"}]
+    kept_subs, kept_probs = drop_print_problem(subs, probs, print_label)
+    assert kept_subs is subs and kept_probs is probs  # fast path
+
+
+def test_drop_print_problem_matches_problem_id_without_label():
+    probs = [{"id": "1-3"}, {"id": "1-4", "label": "1-4"}]
+    kept_subs, kept_probs = drop_print_problem([], probs, "1-3")
+    assert kept_subs == []
+    assert [p["id"] for p in kept_probs] == ["1-4"]
+
+
+def test_drop_print_problem_mixed_labels_unaffected():
+    subs = [{"id": "1", "problem_index": "1-1"},
+            {"id": "2", "problem_index": "1-31"},  # prefix must not match
+            {"id": "3", "problem_index": "1-3"}]
+    probs = [{"id": "1-1", "label": "1-1"},
+             {"id": "1-4", "label": "1-4"}]
+    kept_subs, kept_probs = drop_print_problem(subs, probs, "1-3")
+    assert [r["id"] for r in kept_subs] == ["1", "2"]
+    assert [p["id"] for p in kept_probs] == ["1-1", "1-4"]
+
+
+def make_print_poller(print_label: str):
+    poller, client, store = make_poller(config_poll_seconds=60.0)
+    poller.manual["options"] = {"print_problem": print_label}
+    client.problems = [{"id": "1-3", "label": "1-3", "title": "隐藏题"},
+                       {"id": "1-4", "label": "1-4", "title": "正常题"}]
+    client.subs = [dict(sub_row("1"), problem_index="1-3"),
+                   dict(sub_row("2"), problem_index="1-4")]
+    return poller, client, store
+
+
+def test_print_problem_dropped_from_store_and_never_detail_fetched():
+    poller, client, store = make_print_poller("1-3")
+    asyncio.run(poller.poll_once())
+    snap = store.snapshot()
+    assert "2" in snap.submissions
+    assert "1" not in snap.submissions
+    assert "1-4" in snap.problems
+    assert "1-3" not in snap.problems
+    # the dropped sid never even reached _fetch_details' `needed` list
+    assert client.detail_calls == ["2"]
+
+
+def test_print_problem_drop_clears_detail_cache():
+    poller, client, store = make_poller(config_poll_seconds=60.0)
+    client.subs = [sub_row("1"), dict(sub_row("2"), problem_index="B")]
+    asyncio.run(poller.poll_once())
+    assert set(poller._detail_cache) == {"1", "2"}
+    assert set(poller._detail_status) == {"1", "2"}
+    poller.manual["options"] = {"print_problem": "A"}
+    asyncio.run(poller.poll_once())  # non-config round: snapshot rebuild
+    assert "1" not in poller._detail_cache
+    assert "1" not in poller._detail_status
+    assert "2" in poller._detail_cache and "2" in poller._detail_status
+    snap = store.snapshot()
+    assert "1" not in snap.submissions and "2" in snap.submissions
+    assert "A" not in snap.problems  # rebuild path drops it too
+    # dropped sid never re-fetched, never re-attached
+    assert client.detail_calls == ["1", "2"]

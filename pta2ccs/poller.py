@@ -34,13 +34,35 @@ def _rel_to_ms(rel) -> int | None:
         return None
 
 
+def drop_print_problem(raw_subs: list[dict], raw_problems: list[dict],
+                       print_label: str | None
+                       ) -> tuple[list[dict], list[dict]]:
+    """Drop every submission and problem belonging to the manual
+    print_problem (task 20: that problem's data never reaches the
+    scoreboard — its balloon slip is handled separately).
+
+    Pure: returns new lists, inputs untouched; None/empty print_label is
+    a fast path returning the inputs unchanged.
+    """
+    if not print_label:
+        return raw_subs, raw_problems
+    subs = [row for row in raw_subs
+            if row.get("problem_index") != print_label]
+    problems = [p for p in raw_problems
+                if p.get("label") != print_label and p.get("id") != print_label]
+    return subs, problems
+
+
 class Poller:
     def __init__(self, client: PtaClient, store: Store, settings: Settings,
-                 manual: dict):
+                 manual: dict, *, contest_id: str):
         self.client = client
         self.store = store
         self.settings = settings
         self.manual = manual
+        # connection identity lives in manual/setup-connection.json (task
+        # 17), not Settings — passed straight through to translate()
+        self.contest_id = contest_id
         self.status: dict = {
             "ready": False, "last_success": None, "cookie_ok": True,
             "consecutive_failures": 0, "rate_limited_until": None,
@@ -157,7 +179,17 @@ class Poller:
                       self._rate_limit_until - now)
             return
         try:
+            print_label = (self.manual.get("options") or {}).get("print_problem")
             raw_subs = await self.client.fetch_submissions()
+            if print_label:
+                # drop BEFORE _fetch_details so the hidden problem's sids
+                # never enter `needed` — and purge their cached details so
+                # a later un-hide doesn't resurrect stale payloads (task 20)
+                before_ids = {str(r["id"]) for r in raw_subs}
+                raw_subs, _ = drop_print_problem(raw_subs, [], print_label)
+                for sid in before_ids - {str(r["id"]) for r in raw_subs}:
+                    self._detail_status.pop(sid, None)
+                    self._detail_cache.pop(sid, None)
             await self._fetch_details(raw_subs)
             need_config = (
                 self.store.snapshot() is None
@@ -197,8 +229,13 @@ class Poller:
                          "test_data_count": p.get("test_data_count")}
                         for p in snap.problems.values()
                     ]
+            if print_label:
+                # both paths (live fetch + snapshot rebuild): manual
+                # entries can re-introduce the hidden problem (task 20)
+                _, raw_problems = drop_print_problem([], raw_problems,
+                                                     print_label)
             raw_teams = list(self._last_teams) if self._last_teams is not None else None
-            data = translate(self.settings.contest_id, self.manual,
+            data = translate(self.contest_id, self.manual,
                              raw_subs, raw_problems, raw_teams, _now(),
                              meta=self._last_meta)
             self.store.apply_all(data)

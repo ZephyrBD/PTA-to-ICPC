@@ -230,7 +230,8 @@ def _make_lifespan_app(closable: bool):
     from pta2ccs.poller import Poller
     client = _LifespanFakeClient(closable)
     settings = Settings(poll_interval_seconds=0.01, config_poll_seconds=0.01)
-    poller = Poller(client, Store(), settings, {"contest": {}})
+    poller = Poller(client, Store(), settings, {"contest": {}},
+                    contest_id="c1")
     app = create_app(Store(), poller=poller, contest_id="c1")
     return app, client
 

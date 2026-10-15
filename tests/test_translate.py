@@ -562,3 +562,33 @@ def test_run_id_sanitizes_odd_case_keys():
     assert rid in data.runs
     assert data.runs[rid]["submission_id"] == "801"
     assert data.runs[rid]["memory"] == 1
+
+
+# --- print-problem defensive skip (task 20) ---------------------------------
+
+def test_translate_defensive_skip_print_problem():
+    # belt-and-braces: the poller already drops this data, but a manual
+    # JSON entry can re-introduce the problem — translate must skip it
+    manual = dict(MANUAL, options={"print_problem": "1-3"})
+    problems = [{"id": "1-3", "label": "1-3", "title": "隐藏题"},
+                {"id": "1-4", "label": "1-4", "title": "正常题"}]
+    subs = [
+        {"id": "201", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
+         "team_id": "D22", "team_name": "鸡你太美队", "problem_index": "1-3",
+         "language": "cpp"},
+        {"id": "202", "submit_time": "2023/05/21 09:11:00", "status": "答案正确",
+         "team_id": "D22", "team_name": "鸡你太美队", "problem_index": "1-4",
+         "language": "cpp"},
+    ]
+    data = translate("999", manual, subs, problems, None, NOW)
+    assert "1-3" not in data.problems
+    assert "1-4" in data.problems
+    assert "201" not in data.submissions
+    assert "202" in data.submissions
+    assert "201" not in data.judgements
+
+
+def test_translate_without_print_problem_keeps_missing_labels():
+    # manual_print None must never match a missing label/problem_index
+    data = translate("999", MANUAL, [{}], [{}], None, NOW)
+    assert "0" in data.problems  # id falls back to index, label to letter

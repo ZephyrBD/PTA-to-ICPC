@@ -175,16 +175,6 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
     return app
 
 
-class _ConnectedSettings(Settings):
-    """Settings plus the PTA connection identity, bridged from
-    load_connection for Poller.translate, which still reads
-    settings.contest_id (poller.py's own migration pending). Not part of
-    Settings itself: config.json no longer carries the connection.
-    """
-    contest_id: str = ""
-    pta_cookie: str = ""
-
-
 def _make_poller(settings: Settings, conn: dict, manual: dict,
                  store: Store) -> tuple[Poller, str]:
     """Build the PTA client/poller pair; tz comes from manual config BEFORE
@@ -194,10 +184,8 @@ def _make_poller(settings: Settings, conn: dict, manual: dict,
     client = PtaClient("https://pintia.cn", conn["contest_id"],
                        conn["pta_cookie"], tz=tz,
                        requests_per_second=settings.pta_requests_per_second)
-    poller_settings = _ConnectedSettings(
-        **settings.model_dump(), contest_id=conn["contest_id"],
-        pta_cookie=conn["pta_cookie"])
-    return Poller(client, store, poller_settings, manual), tz
+    return Poller(client, store, settings, manual,
+                  contest_id=conn["contest_id"]), tz
 
 
 def _build_default_app(conn: dict | None = None) -> FastAPI:
