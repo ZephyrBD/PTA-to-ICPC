@@ -65,6 +65,7 @@ class Store:
     def apply_all(self, data: ContestData) -> list[Event]:
         events: list[Event] = []
         old = self._data
+        deleted: list[tuple[str, str]] = []
         for attr, type_ in _STATIC_FIELDS:
             new_map: dict = getattr(data, attr)
             old_map: dict = getattr(old, attr) if old else {}
@@ -75,11 +76,21 @@ class Store:
             for k, v in new_map.items():
                 if old_map.get(k) != v:
                     events.append(self._emit(type_, k, v))
+            # id-keyed collections only: keys gone from the new snapshot are
+            # deletes (spec: data null = deleted). old is None → old_map empty.
+            deleted += [(type_, k) for k in old_map if k not in new_map]
         for sid, sub in data.submissions.items():
             if old is None or old.submissions.get(sid) != sub:
                 events.append(self._emit("submissions", sid, sub))
         for sid, jud in data.judgements.items():
             if old is None or old.judgements.get(sid) != jud:
                 events.append(self._emit("judgements", sid, jud))
+        if old is not None:
+            deleted += [("submissions", sid) for sid in old.submissions
+                        if sid not in data.submissions]
+            deleted += [("judgements", sid) for sid in old.judgements
+                        if sid not in data.judgements]
+        for type_, k in deleted:
+            events.append(self._emit(type_, k, None))
         self._data = data
         return events
