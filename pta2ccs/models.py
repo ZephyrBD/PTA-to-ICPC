@@ -32,10 +32,11 @@ ACCESS_ENDPOINTS = [
     {"type": "organizations", "properties": ["id", "name"]},
     {"type": "teams", "properties": [
         "id", "name", "label", "group_ids", "organization_id", "icpc_id"]},
+    {"type": "persons", "properties": ["id", "name", "role", "team_ids"]},
     {"type": "problems", "properties": [
         "id", "label", "name", "ordinal", "color", "rgb",
         "time_limit", "memory_limit", "code_limit", "test_data_count"]},
-    {"type": "languages", "properties": ["id", "name"]},
+    {"type": "languages", "properties": ["id", "name", "extensions"]},
     {"type": "judgement-types", "properties": ["id", "name", "penalty", "solved"]},
     {"type": "submissions", "properties": [
         "id", "team_id", "problem_id", "language_id", "time", "contest_time",

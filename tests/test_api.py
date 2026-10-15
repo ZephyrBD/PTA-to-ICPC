@@ -284,3 +284,41 @@ def test_default_poller_client_gets_rate_limit_settings():
                                           "pta_cookie": "cookie"},
                                {"contest": {}}, Store())
     assert poller.client._min_interval == 1.0 / 5.0
+
+
+# --- persons collection (task: 扮演 DOMjudge) -------------------------------
+
+def make_persons_client() -> TestClient:
+    manual = {"contest": dict(MANUAL["contest"]),
+              "teams": {"D22": {"members": ["甲", "乙"], "coaches": ["丙"]}}}
+    store = Store()
+    store.apply_all(translate("c1", manual, SUBS,
+                              [{"id": "A", "title": "题A"}], None, NOW))
+    return TestClient(create_app(store, poller=None, contest_id="c1"))
+
+
+def test_persons_collection_and_item():
+    c = make_persons_client()
+    r = c.get("/contests/c1/persons")
+    assert r.status_code == 200
+    persons = {p["id"]: p for p in r.json()}
+    assert set(persons) == {"D22-m0", "D22-m1", "D22-c0"}
+    assert persons["D22-m0"] == {"id": "D22-m0", "name": "甲",
+                                 "role": "contestant", "team_ids": ["D22"]}
+    assert persons["D22-c0"]["role"] == "coach"
+    r = c.get("/contests/c1/persons/D22-m1")
+    assert r.status_code == 200
+    assert r.json()["name"] == "乙"
+    assert r.json()["team_ids"] == ["D22"]
+
+
+def test_persons_404_unknown_id():
+    r = make_persons_client().get("/contests/c1/persons/nope")
+    assert r.status_code == 404
+    assert r.json() == {"code": 404, "message": "person not found: nope"}
+
+
+def test_access_advertises_persons_endpoint_with_properties():
+    body = make_client().get("/contests/c1/access").json()
+    by_type = {e["type"]: e["properties"] for e in body["endpoints"]}
+    assert by_type["persons"] == ["id", "name", "role", "team_ids"]

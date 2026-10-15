@@ -111,6 +111,28 @@ def test_load_connection_incomplete_fields(tmp_path: Path, payload):
     assert load_connection(tmp_path) is None
 
 
+def test_load_connection_includes_print_server_when_set(tmp_path: Path):
+    (tmp_path / "setup-connection.json").write_text(
+        json.dumps({"contest_id": "1234567890", "pta_cookie": "cookie",
+                    "print_server": "http://printer.local/print"}),
+        encoding="utf-8")
+    assert load_connection(tmp_path) == {
+        "contest_id": "1234567890", "pta_cookie": "cookie",
+        "print_server": "http://printer.local/print"}
+
+
+@pytest.mark.parametrize("print_server", [None, "", 123])
+def test_load_connection_omits_print_server_when_unset_or_invalid(
+        tmp_path: Path, print_server):
+    payload: dict = {"contest_id": "1234567890", "pta_cookie": "cookie"}
+    if print_server is not None:
+        payload["print_server"] = print_server
+    (tmp_path / "setup-connection.json").write_text(
+        json.dumps(payload), encoding="utf-8")
+    assert load_connection(tmp_path) == {
+        "contest_id": "1234567890", "pta_cookie": "cookie"}  # no key at all
+
+
 def write_manual(dirpath: Path, name: str, data: dict) -> None:
     dirpath.mkdir(parents=True, exist_ok=True)
     (dirpath / name).write_text(json.dumps(data), encoding="utf-8")
@@ -220,3 +242,16 @@ def test_load_manual_options_default_empty(tmp_path: Path):
     mdir = tmp_path / "manual"
     write_manual(mdir, "a.json", {"teams": {"D22": {"name": "x"}}})
     assert load_manual(mdir)["options"] == {}
+
+
+def test_load_manual_round_trips_seat_members_coaches(tmp_path: Path):
+    # setup GUI's teams file carries seat/members/coaches on the team entry
+    # (task: 扮演 DOMjudge) — load_manual must pass them through untouched
+    mdir = tmp_path / "manual"
+    write_manual(mdir, "setup-teams.json", {
+        "teams": {"D22": {"group_ids": ["1"], "seat": "A12",
+                          "members": ["甲", "乙"], "coaches": ["丙"]}}})
+    merged = load_manual(mdir)
+    assert merged["teams"]["D22"] == {
+        "group_ids": ["1"], "seat": "A12",
+        "members": ["甲", "乙"], "coaches": ["丙"]}

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import logging
 import time
+from pathlib import Path
+
+import httpx
 
 from .config import Settings
+from .printjob import build_job, send_job
 from .pta.client import PtaAuthError, PtaClient, PtaRateLimitError
+from .pta.langs import primary_extension, std_language_id
 from .store import Store
 from .timefmt import parse_reltime
 from .translate import translate
@@ -17,6 +23,13 @@ log = logging.getLogger(__name__)
 # settings.detail_fetch_per_round (task 14 — default 5, was a 50/round
 # module constant that triggered PTA's 429 rate limiting on restart)
 DETAIL_CONCURRENCY = 2
+
+# print pipeline (task: 扮演 DOMjudge): separate, capped budgets — source
+# fetches for print-problem submissions are sequential and capped per
+# round; a submission whose send keeps failing is abandoned after
+# PRINT_MAX_ATTEMPTS failed attempts (logged as an error, never retried).
+PRINT_FETCH_PER_ROUND = 5
+PRINT_MAX_ATTEMPTS = 10
 
 
 def _now() -> dt.datetime:
@@ -55,7 +68,9 @@ def drop_print_problem(raw_subs: list[dict], raw_problems: list[dict],
 
 class Poller:
     def __init__(self, client: PtaClient, store: Store, settings: Settings,
-                 manual: dict, *, contest_id: str):
+                 manual: dict, *, contest_id: str,
+                 print_server: str | None = None,
+                 print_sent_path: Path | str = Path("print_sent.json")):
         self.client = client
         self.store = store
         self.settings = settings
@@ -63,6 +78,20 @@ class Poller:
         # connection identity lives in manual/setup-connection.json (task
         # 17), not Settings — passed straight through to translate()
         self.contest_id = contest_id
+        # PRINT_SERVER (optional): when unset, print-problem submissions
+        # are simply dropped (old behaviour); when set, their source is
+        # fetched and POSTed to the print server each round.
+        self.print_server = print_server or None
+        # already-printed submission ids, persisted to print_sent.json
+        # (cwd-relative like config.json / manual/); loaded leniently so a
+        # missing or corrupt file just starts from an empty set.
+        self._print_sent_path = Path(print_sent_path)
+        self._print_sent: set[str] = self._load_print_sent()
+        # sid → failed-attempt count (source fetch / empty source / POST)
+        self._print_attempts: dict[str, int] = {}
+        # sid → fetched source text; NOT the scoreboard detail cache —
+        # entries are purged once the job is sent (or abandoned).
+        self._print_source: dict[str, str] = {}
         self.status: dict = {
             "ready": False, "last_success": None, "cookie_ok": True,
             "consecutive_failures": 0, "rate_limited_until": None,
@@ -171,6 +200,152 @@ class Poller:
             row["run_results"] = cached["run_results"]
             row["detail_fetched"] = True
 
+    # ------------------------------------------------------------------ #
+    # print pipeline (task: 扮演 DOMjudge — POST print-problem submissions
+    # to PRINT_SERVER in the DOMjudge print script's multipart shape)
+    # ------------------------------------------------------------------ #
+
+    def _load_print_sent(self) -> set[str]:
+        """print_sent.json → already-sent sid set. Missing file → empty;
+        any read/parse problem → empty + warning (never raises)."""
+        try:
+            data = json.loads(self._print_sent_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return set()
+        except (OSError, ValueError) as e:  # includes JSONDecodeError
+            log.warning("cannot read %s (%s); print sent set starts empty",
+                        self._print_sent_path, e)
+            return set()
+        sent = data.get("sent") if isinstance(data, dict) else None
+        if not isinstance(sent, list):
+            log.warning("%s has no 'sent' list; print sent set starts empty",
+                        self._print_sent_path)
+            return set()
+        return {str(s) for s in sent}
+
+    def _persist_print_sent(self) -> None:
+        """Write print_sent.json (tmp + replace; failure only warns — a
+        lost write means a duplicate print, never a crashed poll round)."""
+        payload = json.dumps({"sent": sorted(self._print_sent)},
+                             ensure_ascii=False) + "\n"
+        tmp = self._print_sent_path.parent / (
+            self._print_sent_path.name + ".tmp")
+        try:
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(self._print_sent_path)
+        except OSError as e:
+            log.warning("cannot write %s: %s", self._print_sent_path, e)
+
+    def _print_http_client(self) -> httpx.AsyncClient:
+        """HTTP client for print POSTs (test seam: MockTransport)."""
+        return httpx.AsyncClient()
+
+    def _count_print_attempt(self, sid: str) -> None:
+        """Register one failed attempt for a print submission (non-429
+        source-fetch failure or a failed/empty POST). After
+        PRINT_MAX_ATTEMPTS failures the sid joins the sent set — a
+        permanent skip, logged as an error. Transient conditions that
+        keep a source from ever being fetched (per-round budget, a 429
+        cooldown) never call this: they must not burn attempts."""
+        attempts = self._print_attempts.get(sid, 0) + 1
+        self._print_attempts[sid] = attempts
+        if attempts > PRINT_MAX_ATTEMPTS:
+            log.error(
+                "print job for submission %s permanently skipped "
+                "after %d failed attempts", sid, attempts)
+            self._print_sent.add(sid)
+            self._print_source.pop(sid, None)
+            self._persist_print_sent()
+
+    async def _fetch_print_sources(self, print_rows: list[dict]) -> None:
+        """Fetch source text for unsent print submissions — at most
+        PRINT_FETCH_PER_ROUND per round, sequentially (deliberately not
+        the concurrent detail path). Results land in self._print_source
+        ONLY: print sources never touch _detail_status/_detail_cache, so
+        they can never reach the scoreboard. A 429 sets the poller-wide
+        cooldown and stops fetching this round; a non-429 failure counts
+        one bounded attempt (via _count_print_attempt) — it would
+        otherwise retry forever.
+        """
+        budget = PRINT_FETCH_PER_ROUND
+        for row in print_rows:
+            if budget <= 0:
+                return
+            sid = str(row["id"])
+            if sid in self._print_sent or sid in self._print_source:
+                continue
+            try:
+                detail = await self.client.fetch_submission_detail(sid)
+            except PtaRateLimitError as e:
+                self._set_rate_limit(e.retry_after)
+                log.warning(
+                    "print source fetch paused: rate limited, "
+                    "retry_after=%.1fs", e.retry_after)
+                return
+            except Exception as e:
+                # id only — never the program or raw response
+                log.warning("print source fetch failed for %s: %s", sid, e)
+                self._count_print_attempt(sid)
+                continue
+            program = detail.get("program")
+            self._print_source[sid] = program if isinstance(program, str) else ""
+            budget -= 1
+
+    async def _send_print_jobs(self, print_rows: list[dict],
+                               print_label: str) -> None:
+        """POST every not-yet-sent print submission (spec step 4: runs
+        after store.apply_all so tname/location/group come from the
+        fresh snapshot). A submission is only attempted when its source
+        is cached (i.e. it was actually fetched this/earlier round) —
+        rows still awaiting fetch (per-round budget / 429) never count
+        an attempt. Empty/missing source or a failed POST counts one
+        attempt via _count_print_attempt (after PRINT_MAX_ATTEMPTS
+        failures the sid is permanently skipped). At most
+        PRINT_FETCH_PER_ROUND sends per round so a slow/dead print
+        server cannot stall the poll cycle for long. Success persists
+        the sent set immediately and purges the cached source.
+        """
+        snap = self.store.snapshot()
+        if snap is None:
+            return
+        pending = [r for r in print_rows if str(r["id"]) not in self._print_sent]
+        if not pending:
+            return
+        group_names = {gid: str((g or {}).get("name") or gid)
+                       for gid, g in snap.groups.items()}
+        async with self._print_http_client() as http:
+            for row in pending[:PRINT_FETCH_PER_ROUND]:
+                sid = str(row["id"])
+                if sid not in self._print_source:
+                    # source not fetched yet (budget / 429): wait — this
+                    # must never burn a failure attempt.
+                    continue
+                program = self._print_source.get(sid)
+                ok = bool(program)
+                if ok:
+                    team_id = str(row.get("team_id") or "")
+                    team = snap.teams.get(team_id) or {}
+                    # tname: snapshot name → row team_name → team_id
+                    tname = (str(team.get("name") or "")
+                             or str(row.get("team_name") or "") or team_id)
+                    location = str(team.get("label") or "") or None
+                    group = ",".join(
+                        group_names.get(g, g)
+                        for g in team.get("group_ids") or []) or None
+                    lang = std_language_id(row.get("language"))
+                    job = build_job(
+                        source=program,
+                        filename=f"{print_label}{primary_extension(lang)}",
+                        lang=lang, tname=tname, team=team_id,
+                        location=location, group=group)
+                    ok = await send_job(http, self.print_server, job)
+                if ok:
+                    self._print_sent.add(sid)
+                    self._print_source.pop(sid, None)
+                    self._persist_print_sent()
+                    continue
+                self._count_print_attempt(sid)
+
     async def poll_once(self) -> None:
         now = time.monotonic()
         if self._rate_limit_until is not None and now < self._rate_limit_until:
@@ -181,16 +356,27 @@ class Poller:
         try:
             print_label = (self.manual.get("options") or {}).get("print_problem")
             raw_subs = await self.client.fetch_submissions()
+            print_rows: list[dict] = []
             if print_label:
                 # drop BEFORE _fetch_details so the hidden problem's sids
                 # never enter `needed` — and purge their cached details so
                 # a later un-hide doesn't resurrect stale payloads (task 20)
                 before_ids = {str(r["id"]) for r in raw_subs}
-                raw_subs, _ = drop_print_problem(raw_subs, [], print_label)
+                if self.print_server:
+                    # print pipeline: partition the rows out (they never
+                    # reach translate/store) and handle them separately
+                    print_rows = [r for r in raw_subs
+                                  if r.get("problem_index") == print_label]
+                    raw_subs = [r for r in raw_subs
+                                if r.get("problem_index") != print_label]
+                else:
+                    raw_subs, _ = drop_print_problem(raw_subs, [], print_label)
                 for sid in before_ids - {str(r["id"]) for r in raw_subs}:
                     self._detail_status.pop(sid, None)
                     self._detail_cache.pop(sid, None)
             await self._fetch_details(raw_subs)
+            if print_rows:
+                await self._fetch_print_sources(print_rows)
             need_config = (
                 self.store.snapshot() is None
                 or (_now() - self._last_config_poll).total_seconds()
@@ -243,6 +429,9 @@ class Poller:
             self.status["cookie_ok"] = True
             self.status["consecutive_failures"] = 0
             self.status["last_success"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            if print_rows:
+                # print pipeline step 4: snapshot is fresh — send jobs
+                await self._send_print_jobs(print_rows, print_label)
             # clear an EXPIRED cooldown (a detail 429 may have set one
             # mid-round — never clear an active one here)
             if (self._rate_limit_until is not None

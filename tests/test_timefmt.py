@@ -87,9 +87,9 @@ def test_access_lists_expected_endpoints():
     acc = make_access()
     types = {e["type"] for e in acc["endpoints"]}
     assert types == {
-        "contests", "state", "groups", "organizations", "teams", "problems",
-        "languages", "judgement-types", "submissions", "judgements", "runs",
-        "scoreboard", "event-feed",
+        "contests", "state", "groups", "organizations", "teams", "persons",
+        "problems", "languages", "judgement-types", "submissions",
+        "judgements", "runs", "scoreboard", "event-feed",
     }
     assert acc["capabilities"] == []
     for e in acc["endpoints"]:

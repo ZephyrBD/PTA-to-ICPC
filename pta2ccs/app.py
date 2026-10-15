@@ -22,6 +22,7 @@ COLLECTIONS = {
     "groups": ("groups", None),
     "organizations": ("organizations", None),
     "teams": ("teams", ("organization_id",)),
+    "persons": ("persons", None),
     "problems": ("problems", None),
     "languages": ("languages", None),
     "judgement-types": ("judgement_types", None),
@@ -31,9 +32,9 @@ COLLECTIONS = {
 }
 ITEM_SINGULAR = {
     "submissions": "submission", "judgements": "judgement", "runs": "run",
-    "teams": "team", "problems": "problem", "groups": "group",
-    "organizations": "organization", "languages": "language",
-    "judgement-types": "judgement type",
+    "teams": "team", "persons": "person", "problems": "problem",
+    "groups": "group", "organizations": "organization",
+    "languages": "language", "judgement-types": "judgement type",
 }
 
 
@@ -185,7 +186,8 @@ def _make_poller(settings: Settings, conn: dict, manual: dict,
                        conn["pta_cookie"], tz=tz,
                        requests_per_second=settings.pta_requests_per_second)
     return Poller(client, store, settings, manual,
-                  contest_id=conn["contest_id"]), tz
+                  contest_id=conn["contest_id"],
+                  print_server=conn.get("print_server")), tz
 
 
 def _build_default_app(conn: dict | None = None) -> FastAPI:

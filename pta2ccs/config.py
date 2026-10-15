@@ -62,7 +62,13 @@ def load_connection(manual_dir: Path) -> dict[str, str] | None:
         return None
     if not isinstance(pta_cookie, str) or not pta_cookie:
         return None
-    return {"contest_id": contest_id, "pta_cookie": pta_cookie}
+    out: dict[str, str] = {"contest_id": contest_id, "pta_cookie": pta_cookie}
+    # optional PRINT_SERVER URL (print pipeline); missing/empty/non-str →
+    # omitted, existing validation untouched
+    print_server = data.get("print_server")
+    if isinstance(print_server, str) and print_server:
+        out["print_server"] = print_server
+    return out
 
 
 _ID_SECTIONS = ("groups", "organizations", "teams", "problems", "languages")

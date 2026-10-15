@@ -6,5 +6,6 @@ __pycache__/
 .playwright-cli/
 config.json
 manual/
+print_sent.json
 dist/
 *.egg-info/

@@ -1,13 +1,16 @@
 import asyncio
+import json
 import logging
 import time
 
+import httpx
 import pytest
 
 from pta2ccs.config import Settings
-from pta2ccs.poller import Poller, drop_print_problem
+from pta2ccs.poller import PRINT_FETCH_PER_ROUND, PRINT_MAX_ATTEMPTS, Poller, drop_print_problem
 from pta2ccs.pta.client import PtaRateLimitError
 from pta2ccs.store import Store
+from tests.test_printjob import parse_multipart
 
 ZERO_SUB_TEAM_ID = "9001540000000000001"
 
@@ -70,7 +73,9 @@ class FakeClient:
                                  "time": 0.003, "memory": 2048, "exitcode": 0}]}
 
 
-def make_poller(config_poll_seconds: float = 0.01,
+def make_poller(config_poll_seconds: float = 0.01, *,
+                print_server: str | None = None,
+                print_sent_path=None,
                 **settings_overrides) -> tuple[Poller, FakeClient, Store]:
     settings = Settings(poll_interval_seconds=0.01,
                         config_poll_seconds=config_poll_seconds,
@@ -79,7 +84,13 @@ def make_poller(config_poll_seconds: float = 0.01,
     store = Store()
     manual = {"contest": {"start_time": "2023-05-21T09:00:00+08:00",
                           "duration": "31:00:00", "pta_timezone": "+08:00"}}
-    return Poller(client, store, settings, manual, contest_id="c1"), client, store
+    extra: dict = {}
+    if print_server is not None:
+        extra["print_server"] = print_server
+    if print_sent_path is not None:
+        extra["print_sent_path"] = print_sent_path
+    return (Poller(client, store, settings, manual, contest_id="c1", **extra),
+            client, store)
 
 
 def test_poll_once_populates_store():
@@ -433,3 +444,260 @@ def test_print_problem_drop_clears_detail_cache():
     assert "A" not in snap.problems  # rebuild path drops it too
     # dropped sid never re-fetched, never re-attached
     assert client.detail_calls == ["1", "2"]
+
+
+# --- print pipeline (task: 扮演 DOMjudge) -----------------------------------
+
+PRINT_SERVER = "http://printer.local/print"
+
+
+def make_pipeline_poller(tmp_path, *, print_server: str | None = PRINT_SERVER):
+    """Poller with a print problem, a manual seat/group for D22, a roster
+    carrying D22, and print_sent.json isolated under tmp_path."""
+    poller, client, store = make_poller(
+        config_poll_seconds=60.0, print_server=print_server,
+        print_sent_path=tmp_path / "print_sent.json")
+    poller.manual["options"] = {"print_problem": "1-3"}
+    poller.manual["groups"] = {"1": {"name": "正式队伍"}}
+    poller.manual["teams"] = {"D22": {"group_ids": ["1"], "seat": "A12"}}
+    client.problems = [{"id": "1-3", "label": "1-3", "title": "打印题"},
+                       {"id": "1-4", "label": "1-4", "title": "正常题"}]
+    client.teams = [{"id": "D22", "name": "鸡你太美队", "label": "2022000111",
+                     "group_id": "1901545194649161728",
+                     "organization_id": "1901545194649161728",
+                     "organization_name": "DSA_2024"}]
+    client.subs = [dict(sub_row("1"), problem_index="1-3"),
+                   dict(sub_row("2"), problem_index="1-4")]
+    return poller, client, store
+
+
+def capture_http(poller, status_code: int = 200) -> list:
+    """Replace the print HTTP seam with a MockTransport; returns the list
+    of captured requests (one entry per POST)."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status_code, json={})
+
+    poller._print_http_client = lambda: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler))
+    return requests
+
+
+def test_print_pipeline_happy_path(tmp_path):
+    poller, client, store = make_pipeline_poller(tmp_path)
+    requests = capture_http(poller)
+    asyncio.run(poller.poll_once())
+    snap = store.snapshot()
+    # print-problem rows never reach the scoreboard
+    assert "1" not in snap.submissions and "1" not in snap.sources
+    assert "2" in snap.submissions
+    assert "1-3" not in snap.problems and "1-4" in snap.problems
+    # detail isolation: the print source never enters the scoreboard caches
+    assert "1" not in poller._detail_status and "1" not in poller._detail_cache
+    # source fetch: normal row first (_fetch_details), then the print row
+    assert client.detail_calls == ["2", "1"]
+    # multipart job from the fresh snapshot
+    assert len(requests) == 1
+    parts = parse_multipart(requests[0].content,
+                            requests[0].headers["content-type"])
+    assert parts["file"][0] == "1-3.cc"
+    assert parts["file"][1] == "int main(){}".encode("utf-8")
+    assert parts["filename"][1] == b"1-3.cc"
+    assert parts["lang"][1] == b"cpp"
+    assert parts["tname"][1] == "鸡你太美队".encode("utf-8")
+    assert parts["team"][1] == b"D22"
+    assert parts["location"][1] == b"A12"          # manual seat -> label
+    assert parts["group"][1] == "正式队伍".encode("utf-8")  # manual group name
+    # sent set persisted; cached source purged
+    assert poller._print_sent == {"1"}
+    assert json.loads((tmp_path / "print_sent.json").read_text(
+        encoding="utf-8"))["sent"] == ["1"]
+    assert poller._print_source == {}
+
+
+def test_print_pipeline_second_round_never_resends(tmp_path):
+    poller, client, store = make_pipeline_poller(tmp_path)
+    requests = capture_http(poller)
+    asyncio.run(poller.poll_once())
+    assert len(requests) == 1
+    asyncio.run(poller.poll_once())  # non-config round (config_poll=60s)
+    assert len(requests) == 1  # still one POST total
+    # already-sent sid: no source refetch either
+    assert client.detail_calls == ["2", "1"]
+
+
+def test_print_pipeline_respects_preexisting_sent_file(tmp_path):
+    (tmp_path / "print_sent.json").write_text(
+        json.dumps({"sent": ["1"]}), encoding="utf-8")
+    poller, client, store = make_pipeline_poller(tmp_path)
+    requests = capture_http(poller)
+    asyncio.run(poller.poll_once())
+    assert requests == []                 # never POSTed
+    assert "1" not in client.detail_calls  # source never fetched
+    assert "1" not in store.snapshot().submissions  # still hidden
+    assert "2" in store.snapshot().submissions
+
+
+def test_print_pipeline_500_failure_retries_next_round(tmp_path, caplog):
+    poller, client, store = make_pipeline_poller(tmp_path)
+    capture_http(poller, status_code=500)
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.printjob"):
+        asyncio.run(poller.poll_once())
+    assert "1" not in poller._print_sent
+    assert poller._print_attempts == {"1": 1}
+    assert not (tmp_path / "print_sent.json").exists()  # nothing persisted
+    assert any("rejected job" in rec.message for rec in caplog.records)
+    # recovery: next round POSTs the cached source successfully
+    requests = capture_http(poller, status_code=200)
+    asyncio.run(poller.poll_once())
+    assert len(requests) == 1
+    assert poller._print_sent == {"1"}
+    assert json.loads((tmp_path / "print_sent.json").read_text(
+        encoding="utf-8"))["sent"] == ["1"]
+
+
+def test_print_pipeline_gives_up_after_max_attempts(tmp_path, caplog):
+    poller, client, store = make_pipeline_poller(tmp_path)
+    for i in range(PRINT_MAX_ATTEMPTS):
+        capture_http(poller, status_code=500)
+        asyncio.run(poller.poll_once())
+        assert "1" not in poller._print_sent
+        assert poller._print_attempts["1"] == i + 1
+    with caplog.at_level(logging.ERROR, logger="pta2ccs.poller"):
+        capture_http(poller, status_code=500)
+        asyncio.run(poller.poll_once())  # attempt 11 -> permanent skip
+    assert "1" in poller._print_sent
+    assert poller._print_attempts["1"] == PRINT_MAX_ATTEMPTS + 1
+    assert any("permanently skipped" in rec.message for rec in caplog.records)
+    assert json.loads((tmp_path / "print_sent.json").read_text(
+        encoding="utf-8"))["sent"] == ["1"]
+    # stays skipped - no further POSTs
+    requests = capture_http(poller, status_code=200)
+    asyncio.run(poller.poll_once())
+    assert requests == []
+
+
+def test_print_source_fetch_budget_per_round(tmp_path):
+    poller, client, store = make_pipeline_poller(tmp_path)
+    client.subs = [dict(sub_row(str(i)), problem_index="1-3")
+                   for i in range(PRINT_FETCH_PER_ROUND + 2)]  # 7 rows
+    requests = capture_http(poller)
+    asyncio.run(poller.poll_once())
+    # budget: PRINT_FETCH_PER_ROUND sources fetched and sent this round
+    assert len(client.detail_calls) == PRINT_FETCH_PER_ROUND
+    assert len(requests) == PRINT_FETCH_PER_ROUND
+    # backlog drained on the next round
+    asyncio.run(poller.poll_once())
+    assert len(client.detail_calls) == PRINT_FETCH_PER_ROUND + 2
+    assert len(requests) == PRINT_FETCH_PER_ROUND + 2
+    assert poller._print_sent == {str(i)
+                                  for i in range(PRINT_FETCH_PER_ROUND + 2)}
+    sent = json.loads((tmp_path / "print_sent.json").read_text(
+        encoding="utf-8"))["sent"]
+    assert sent == sorted(str(i) for i in range(PRINT_FETCH_PER_ROUND + 2))
+
+
+def test_print_pipeline_empty_source_counts_attempt(tmp_path):
+    poller, client, store = make_pipeline_poller(tmp_path)
+    client.detail_program = ""  # fetch succeeds but the source is empty
+    requests = capture_http(poller)
+    asyncio.run(poller.poll_once())
+    assert requests == []  # never POSTed an empty program
+    assert poller._print_attempts == {"1": 1}
+    assert "1" not in poller._print_sent
+
+
+def test_print_pipeline_detail_failure_counts_attempt(tmp_path, caplog):
+    poller, client, store = make_pipeline_poller(tmp_path)
+    client.detail_fail_ids = {"1"}
+    requests = capture_http(poller)
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+        asyncio.run(poller.poll_once())
+    assert requests == []  # source fetch failed -> nothing to send
+    assert poller._print_attempts == {"1": 1}
+    assert any("print source fetch failed" in rec.message
+               and "1" in rec.message for rec in caplog.records)
+    assert "int main(){}" not in caplog.text  # program never logged
+
+
+def test_print_sent_file_corrupt_starts_empty(tmp_path, caplog):
+    (tmp_path / "print_sent.json").write_text("{not json",
+                                              encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+        poller, client, store = make_pipeline_poller(tmp_path)
+    assert poller._print_sent == set()
+    assert any("print sent set starts empty" in rec.message
+               for rec in caplog.records)
+    # ...and the pipeline still works
+    requests = capture_http(poller)
+    asyncio.run(poller.poll_once())
+    assert len(requests) == 1
+
+
+def test_without_print_server_keeps_old_drop_path(tmp_path):
+    poller, client, store = make_pipeline_poller(tmp_path, print_server=None)
+
+    def boom():
+        raise AssertionError("print HTTP client must not be constructed")
+
+    poller._print_http_client = boom  # type: ignore[method-assign]
+    asyncio.run(poller.poll_once())
+    snap = store.snapshot()
+    assert "1" not in snap.submissions  # dropped as before
+    assert "2" in snap.submissions
+    # print row never detail-fetched on the old path
+    assert client.detail_calls == ["2"]
+    assert not (tmp_path / "print_sent.json").exists()  # no state written
+
+
+def test_print_pipeline_team_absent_falls_back_to_row_fields(tmp_path):
+    """Print submission whose team is not in the roster → snapshot team
+    lookup misses, so tname comes from row.team_name and location/group
+    are omitted entirely."""
+    poller, client, store = make_pipeline_poller(tmp_path)
+    client.subs = [dict(sub_row("1"), problem_index="1-3", team_id="X99"),
+                   dict(sub_row("2"), problem_index="1-4")]
+    requests = capture_http(poller)
+    asyncio.run(poller.poll_once())
+    assert len(requests) == 1
+    parts = parse_multipart(requests[0].content,
+                            requests[0].headers["content-type"])
+    assert parts["tname"][1] == "队".encode("utf-8")   # row.team_name fallback
+    assert parts["team"][1] == b"X99"
+    assert "location" not in parts      # no team → no seat
+    assert "group" not in parts         # no team → no group
+
+
+def test_print_pipeline_empty_seat_falls_back_to_roster_label(tmp_path):
+    """Manual team with no seat → team.label stays the PTA roster label
+    (学号), which is sent as the print location."""
+    poller, client, store = make_pipeline_poller(tmp_path)
+    poller.manual["teams"] = {"D22": {"group_ids": ["1"]}}  # no seat
+    requests = capture_http(poller)
+    asyncio.run(poller.poll_once())
+    parts = parse_multipart(requests[0].content,
+                            requests[0].headers["content-type"])
+    assert parts["location"][1] == b"2022000111"  # roster label
+
+
+def test_print_source_fetch_429_cooldown_without_attempt_burn(tmp_path):
+    """A 429 while fetching print sources sets the poller-wide cooldown,
+    keeps the round alive, and must NOT count a failure attempt for a
+    submission that was never fetched (review finding #1)."""
+    poller, client, store = make_pipeline_poller(tmp_path)
+    client.detail_rate_limit_ids = {"1"}
+    capture_http(poller)
+    asyncio.run(poller.poll_once())
+    assert poller._rate_limit_until is not None   # cooldown armed
+    assert poller._print_source == {}             # source never cached
+    assert poller._print_attempts == {}           # no false attempt burn
+    assert "1" not in poller._print_sent
+    # once the cooldown clears, the next round fetches and sends normally
+    poller._rate_limit_until = None
+    client.detail_rate_limit_ids = set()
+    requests = capture_http(poller)
+    asyncio.run(poller.poll_once())
+    assert len(requests) == 1
+    assert poller._print_sent == {"1"}

@@ -1,12 +1,15 @@
 import asyncio
 import json
 
+import pytest
+
 import pta2ccs.setup as setup
 from pta2ccs.setup import (
     _residual_config_prefill,
     allocate_group_id,
     build_problem_rows,
     build_team_rows,
+    build_teams_setup,
     fetch_setup_data,
     load_manual_setup,
     sort_team_rows,
@@ -341,3 +344,79 @@ def test_residual_config_prefill_malformed(tmp_path):
     cfg = tmp_path / "config.json"
     cfg.write_text("{not json", encoding="utf-8")
     assert _residual_config_prefill(cfg) is None
+
+
+# ---------------------------------------------------------------------------
+# seat / members / coaches (task: 扮演 DOMjudge)
+# ---------------------------------------------------------------------------
+
+def test_build_team_rows_prefills_seat_members_coaches():
+    teams = [{"id": "t1", "name": "甲", "label": "2023001"}]
+    saved = {"t1": {"group_ids": ["g1"], "seat": "A12",
+                    "members": ["甲", "乙"], "coaches": ["丙"]}}
+    rows = build_team_rows(teams, {"g1": {"name": "正式队伍"}}, saved)
+    assert rows[0]["seat"] == "A12"
+    assert rows[0]["members"] == ["甲", "乙"]
+    assert rows[0]["coaches"] == ["丙"]
+
+
+def test_build_team_rows_default_meta_is_empty():
+    rows = build_team_rows([{"id": "t1", "name": "甲", "label": "2023001"}],
+                           {}, {})
+    assert rows[0]["seat"] == ""
+    assert rows[0]["members"] == []
+    assert rows[0]["coaches"] == []
+
+
+def test_build_teams_setup_omits_empty_values():
+    assignments = {"t1": set(), "t2": {"g1"}, "t3": set()}
+    team_meta = {"t1": {"seat": "", "members": [], "coaches": []},
+                 "t2": {"seat": "", "members": [], "coaches": []},
+                 "t3": {"seat": "A12", "members": ["甲"], "coaches": ["丙"]}}
+    out = build_teams_setup(assignments, team_meta)
+    # t1: nothing to write -> omitted; t2: groups only; t3: meta only
+    assert out == {"t2": {"group_ids": ["g1"]},
+                   "t3": {"seat": "A12", "members": ["甲"],
+                          "coaches": ["丙"]}}
+
+
+def test_build_teams_setup_keeps_all_fields_and_sorts_groups():
+    out = build_teams_setup({"t1": {"g2", "g1"}},
+                            {"t1": {"seat": " A12 ", "members": ["", "甲"],
+                                    "coaches": [" "]}})
+    assert out == {"t1": {"group_ids": ["g1", "g2"], "seat": "A12",
+                          "members": ["甲"]}}  # blank entries dropped
+
+
+def test_build_teams_setup_empty_inputs():
+    assert build_teams_setup({}, {}) == {}
+    assert build_teams_setup(None, None) == {}
+    # assignments exist but no meta entry -> groups still written
+    assert build_teams_setup({"t1": {"g1"}}, None) == {
+        "t1": {"group_ids": ["g1"]}}
+
+
+def test_write_load_manual_setup_seat_members_round_trip(tmp_path):
+    teams = {"t1": {"group_ids": ["g1"], "seat": "A12",
+                    "members": ["甲", "乙"], "coaches": ["丙"]}}
+    write_manual_setup(tmp_path, {}, {"g1": {"name": "正式队伍"}}, teams, None)
+    assert load_manual_setup(tmp_path)["teams"] == teams
+
+
+def test_write_connection_includes_print_server_when_set(tmp_path):
+    write_connection(tmp_path, {"contest_id": "c1", "pta_cookie": "cookie",
+                                "print_server": "http://printer.local/print"})
+    data = json.loads((tmp_path / "setup-connection.json").read_text(
+        encoding="utf-8"))
+    assert data == {"contest_id": "c1", "pta_cookie": "cookie",
+                    "print_server": "http://printer.local/print"}
+
+
+@pytest.mark.parametrize("print_server", ["", None, 42])
+def test_write_connection_omits_print_server_when_unset(
+        tmp_path, print_server):
+    write_connection(tmp_path, {"contest_id": "c1", "pta_cookie": "cookie",
+                                "print_server": print_server})
+    data = json.loads((tmp_path / "setup-connection.json").read_text(
+        encoding="utf-8"))
+    assert data == {"contest_id": "c1", "pta_cookie": "cookie"}

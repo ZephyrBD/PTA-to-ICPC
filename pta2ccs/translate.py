@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from .models import sanitize_id
 from .pta.client import COMPILER_LANGUAGES
+from .pta.langs import extensions_for, std_language_id
 from .pta.verdicts import PTA_STATUS_VERDICT_MAP, PTA_VERDICT_MAP
 from .timefmt import parse_offset, parse_pta_time, parse_reltime, to_iso_time, to_reltime
 
@@ -52,6 +53,9 @@ class ContestData:
     groups: dict[str, dict] = field(default_factory=dict)
     organizations: dict[str, dict] = field(default_factory=dict)
     teams: dict[str, dict] = field(default_factory=dict)
+    # Contest API persons: contestants/coaches from manual team entries
+    # (role contestant/coach, team_ids [tid]); never mirrored from PTA.
+    persons: dict[str, dict] = field(default_factory=dict)
     problems: dict[str, dict] = field(default_factory=dict)
     languages: dict[str, dict] = field(default_factory=dict)
     judgement_types: dict[str, dict] = field(default_factory=dict)
@@ -148,10 +152,32 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
     data.contest = _build_contest(contest_id, mc, meta)
     data.state = _build_state(data.contest, now)
 
+    # manual overrides keyed by id; teams are special-cased (task: seat /
+    # members / coaches) — seat overrides label, members/coaches never
+    # leak into the team object but seed the persons collection below.
+    pending_persons: list[tuple[str, int, object, str]] = []
     for key in ("groups", "organizations", "teams", "problems", "languages"):
         for k, v in (manual.get(key) or {}).items():
             entry = dict(v)
             entry["id"] = k
+            if key == "teams":
+                seat = entry.pop("seat", None)
+                if seat not in (None, ""):
+                    # manual seat = team.label (at WFs the team seat
+                    # number); empty seat keeps the PTA roster label
+                    entry["label"] = str(seat)
+                for role, field_name in (("contestant", "members"),
+                                         ("coach", "coaches")):
+                    # GUI always writes lists; guard hand-edited files —
+                    # a bare string or dict would otherwise iterate per
+                    # character/key.
+                    names = entry.pop(field_name, None)
+                    if not isinstance(names, list):
+                        continue
+                    for i, name in enumerate(names):
+                        if name in (None, ""):
+                            continue
+                        pending_persons.append((k, i, name, role))
             data.__dict__[key][k] = entry
 
     data.judgement_types = {k: dict(v, id=k) for k, v in BUILTIN_JUDGEMENT_TYPES.items()}
@@ -198,16 +224,24 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
 
     # enabled compilers from contest meta → advertised languages even with
     # zero submissions; manual entries (above) and observed submissions
-    # (below) still win via setdefault semantics.
+    # (below) still win via setdefault semantics. Ids are the Contest API
+    # standard ids (merged enums share one id; first-seen name wins) and
+    # every language object carries the known-languages extensions table.
     for enum in (meta or {}).get("compilers") or []:
         name = COMPILER_LANGUAGES.get(enum, enum)
-        lid = sanitize_id(name)
-        data.languages.setdefault(lid, {"id": lid, "name": name})
+        lid = std_language_id(enum)
+        data.languages.setdefault(lid, {"id": lid, "name": name,
+                                        "extensions": extensions_for(lid)})
 
     for lang in dict.fromkeys(str(s.get("language", "unknown")) for s in raw_submissions):
-        lid = sanitize_id(lang)
+        lid = std_language_id(lang)
         if lid not in data.languages:
-            data.languages[lid] = {"id": lid, "name": lang}
+            data.languages[lid] = {"id": lid, "name": lang,
+                                   "extensions": extensions_for(lid)}
+    # manual language entries (applied above) win on name but must still
+    # advertise the standard extensions field ([] when the key is unknown)
+    for lid, entry in data.languages.items():
+        entry.setdefault("extensions", extensions_for(lid))
 
     # roster (raw_teams from PtaClient.fetch_teams): every member is a team,
     # even with zero submissions. Manual entries were applied above and win —
@@ -269,7 +303,7 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
             team.setdefault("icpc_id", None)
         sid = sanitize_id(str(row["id"]))
         problem_id = sanitize_id(str(row.get("problem_index", "")))
-        language_id = sanitize_id(str(row.get("language", "unknown")))
+        language_id = std_language_id(row.get("language", "unknown"))
         contest_time = to_reltime(ts - start) if start else "0:00:00"
         data.submissions[sid] = {
             "id": sid, "team_id": team_id, "problem_id": problem_id,
@@ -342,4 +376,13 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
                     "exit_code": r.get("exitcode"),
                     "judge_time": to_iso_time(ts),
                 }
+    # persons from manual team members/coaches: reference integrity first —
+    # a person is only emitted when its team survived into data.teams.
+    for tid, i, name, role in pending_persons:
+        if tid not in data.teams:
+            continue
+        suffix = "m" if role == "contestant" else "c"
+        pid = sanitize_id(f"{tid}-{suffix}{i}")
+        data.persons[pid] = {"id": pid, "name": str(name), "role": role,
+                             "team_ids": [tid]}
     return data

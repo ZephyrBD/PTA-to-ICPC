@@ -9,6 +9,7 @@ EVENT_WINDOW = 10000
 _STATIC_FIELDS = (
     ("contest", "contests"), ("state", "state"), ("groups", "groups"),
     ("organizations", "organizations"), ("teams", "teams"),
+    ("persons", "persons"),
     ("problems", "problems"), ("languages", "languages"),
     ("judgement_types", "judgement-types"), ("runs", "runs"),
     # ContestData.sources (submission_id → program text) is deliberately

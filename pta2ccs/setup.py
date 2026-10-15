@@ -139,13 +139,15 @@ def build_team_rows(teams, groups, saved_assignments) -> list[dict]:
 
     ``group_ids`` prefill from ``saved_assignments`` (team_id → {group_ids});
     ``group_names`` is the comma-joinable display form resolved via ``groups``
-    (unknown ids fall back to the id itself). Read-only org columns come from
-    the PTA roster.
+    (unknown ids fall back to the id itself). ``seat``/``members``/``coaches``
+    also prefill from the same saved entry (defaults ""/[] when absent).
+    Read-only org columns come from the PTA roster.
     """
     rows: list[dict] = []
     for t in teams or []:
         tid = str(t["id"])
-        gids = list(((saved_assignments or {}).get(tid) or {}).get("group_ids") or [])
+        saved = (saved_assignments or {}).get(tid) or {}
+        gids = list(saved.get("group_ids") or [])
         names = [str((groups.get(g) or {}).get("name") or g) for g in gids]
         rows.append({
             "id": tid,
@@ -156,8 +158,43 @@ def build_team_rows(teams, groups, saved_assignments) -> list[dict]:
                 t.get("organization_name") or t.get("organization_id") or ""),
             "group_ids": gids,
             "group_names": names,
+            "seat": str(saved.get("seat") or ""),
+            "members": [str(m) for m in saved.get("members") or []],
+            "coaches": [str(c) for c in saved.get("coaches") or []],
         })
     return sort_teams_by_label(rows)
+
+
+def build_teams_setup(assignments, team_meta) -> dict:
+    """teams section for setup-teams.json (pure; empty values omitted).
+
+    ``assignments`` maps team_id → set/list of group ids, ``team_meta``
+    maps team_id → {seat, members, coaches}. Per team the output entry
+    carries ``group_ids`` (non-empty only — existing rule) plus ``seat`` /
+    ``members`` / ``coaches`` (non-empty only); a team with nothing to
+    write is omitted entirely.
+    """
+    out: dict = {}
+    for tid, gs in (assignments or {}).items():
+        entry: dict = {}
+        gids = sorted(gs)
+        if gids:
+            entry["group_ids"] = gids
+        meta = (team_meta or {}).get(tid) or {}
+        seat = str(meta.get("seat") or "").strip()
+        if seat:
+            entry["seat"] = seat
+        members = [str(m).strip() for m in meta.get("members") or []
+                   if str(m).strip()]
+        if members:
+            entry["members"] = members
+        coaches = [str(c).strip() for c in meta.get("coaches") or []
+                   if str(c).strip()]
+        if coaches:
+            entry["coaches"] = coaches
+        if entry:
+            out[tid] = entry
+    return out
 
 
 async def fetch_setup_data(client) -> tuple[list[dict], list[dict]]:
@@ -205,11 +242,12 @@ def write_manual_setup(manual_dir, problems_colors, groups, assignments,
                        print_problem=None) -> None:
     """Write the three setup files (UTF-8, no ASCII escaping, indent 2).
 
-    ``assignments`` maps team_id → {group_ids: [...]}; the caller omits teams
-    with an empty assignment. ``print_problem`` (label or None) is stored as
-    a top-level sibling of ``"problems"`` in setup-problems.json; None is
-    written explicitly as null ("no print problem" is meaningful after
-    switching contests).
+    ``assignments`` maps team_id → {group_ids: [...], seat?, members?,
+    coaches?} (see ``build_teams_setup`` for the omission rules); the
+    caller omits teams with an empty assignment. ``print_problem`` (label
+    or None) is stored as a top-level sibling of ``"problems"`` in
+    setup-problems.json; None is written explicitly as null ("no print
+    problem" is meaningful after switching contests).
     """
     manual_dir = Path(manual_dir)
     manual_dir.mkdir(parents=True, exist_ok=True)
@@ -225,11 +263,17 @@ def write_manual_setup(manual_dir, problems_colors, groups, assignments,
 
 
 def write_connection(manual_dir, conn: dict) -> None:
-    """Write ``manual_dir/setup-connection.json`` (UTF-8, indent 2)."""
+    """Write ``manual_dir/setup-connection.json`` (UTF-8, indent 2).
+
+    The optional ``print_server`` URL is only written when non-empty.
+    """
     manual_dir = Path(manual_dir)
     manual_dir.mkdir(parents=True, exist_ok=True)
     payload = {"contest_id": conn["contest_id"],
                "pta_cookie": conn["pta_cookie"]}
+    print_server = conn.get("print_server")
+    if isinstance(print_server, str) and print_server:
+        payload["print_server"] = print_server
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     (manual_dir / SETUP_CONNECTION_FILE).write_text(text, encoding="utf-8")
 
@@ -287,11 +331,13 @@ def launch_connection_dialog(parent, settings: Settings, manual_dir,
                              prefill=None) -> dict | None:
     """Modal dialog to enter/validate the PTA connection.
 
-    Two Entry fields (比赛 ID / PTA Cookie), prefilled from ``prefill``.
-    "连接并拉取" validates with one ``_fetch_remote`` round-trip (exercises
-    both cookie auth and contest id), then writes setup-connection.json and
-    returns the conn dict; "取消" / window close returns None. ``parent`` may
-    be None (standalone call from ``main()`` — a temporary root is created).
+    Three Entry fields (比赛 ID / PTA Cookie / 打印服务器 URL), prefilled
+    from ``prefill``. The print server is optional but, when non-empty,
+    must start with http:// or https://. "连接并拉取" validates with one
+    ``_fetch_remote`` round-trip (exercises both cookie auth and contest
+    id), then writes setup-connection.json and returns the conn dict;
+    "取消" / window close returns None. ``parent`` may be None (standalone
+    call from ``main()`` — a temporary root is created).
     """
     import tkinter as tk
     from tkinter import messagebox, ttk
@@ -304,7 +350,7 @@ def launch_connection_dialog(parent, settings: Settings, manual_dir,
 
     dlg = tk.Toplevel(parent)
     dlg.title("比赛连接")
-    dlg.geometry("300x160")
+    dlg.geometry("300x220")
     dlg.resizable(False, False)
 
     result: dict = {"conn": None}
@@ -315,16 +361,28 @@ def launch_connection_dialog(parent, settings: Settings, manual_dir,
     ttk.Label(dlg, text="PTA Cookie").pack(anchor="w", padx=12, pady=(8, 0))
     cookie_entry = ttk.Entry(dlg, width=36)
     cookie_entry.pack(fill="x", padx=12)
+    ttk.Label(dlg, text="打印服务器 URL（可选，PRINT_SERVER）").pack(
+        anchor="w", padx=12, pady=(8, 0))
+    print_entry = ttk.Entry(dlg, width=36)
+    print_entry.pack(fill="x", padx=12)
 
     prefill = prefill or {}
     cid_entry.insert(0, str(prefill.get("contest_id") or ""))
     cookie_entry.insert(0, str(prefill.get("pta_cookie") or ""))
+    print_entry.insert(0, str(prefill.get("print_server") or ""))
 
     def on_connect() -> None:
         conn = {"contest_id": cid_entry.get().strip(),
-                "pta_cookie": cookie_entry.get().strip()}
+                "pta_cookie": cookie_entry.get().strip(),
+                "print_server": print_entry.get().strip()}
         if not conn["contest_id"] or not conn["pta_cookie"]:
             messagebox.showwarning("比赛连接", "请填写比赛 ID 和 PTA Cookie",
+                                   parent=dlg)
+            return
+        if conn["print_server"] and not conn["print_server"].startswith(
+                ("http://", "https://")):
+            messagebox.showwarning("比赛连接",
+                                   "打印服务器 URL 需以 http:// 或 https:// 开头",
                                    parent=dlg)
             return
         try:
@@ -367,6 +425,11 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
                   for gid, g in (saved.get("groups") or {}).items()}
     team_rows = build_team_rows(teams, group_defs, saved.get("teams") or {})
     assignments = {r["id"]: set(r["group_ids"]) for r in team_rows}
+    # seat/members/coaches live in a parallel dict keyed by team id (the
+    # Treeview only displays groups); the 座位号 / 成员 panel edits it.
+    team_meta = {r["id"]: {"seat": r["seat"], "members": list(r["members"]),
+                           "coaches": list(r["coaches"])}
+                 for r in team_rows}
 
     state = {"dirty": False}
     ui = {"combo_map": {}}
@@ -395,14 +458,45 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
 
     pframe = ttk.Frame(notebook)
     tree = ttk.Treeview(
-        pframe, columns=("ordinal", "label", "name", "color", "print"),
+        pframe, columns=("ordinal", "label", "name", "color"),
         show="headings", height=18)
     for col, text, width in (("ordinal", "#", 40), ("label", "题号", 100),
-                             ("name", "名称", 320), ("color", "颜色", 200),
-                             ("print", "打印题", 70)):
+                             ("name", "名称", 320), ("color", "颜色", 200)):
         tree.heading(col, text=text)
         tree.column(col, width=width, anchor="w")
     tree.pack(side="left", fill="both", expand=True)
+
+    print_var = tk.StringVar(value="")
+
+    def sync_print_panel() -> None:
+        # radios read their state from problem_rows (single source of truth)
+        print_var.set(next((str(r["label"]) for r in problem_rows if r["print"]),
+                           ""))
+
+    def on_print_selected() -> None:
+        new_label = print_var.get()
+        old_label = next((str(r["label"]) for r in problem_rows if r["print"]),
+                         "")
+        if old_label == new_label:
+            return
+        for row in problem_rows:
+            row["print"] = new_label != "" and str(row["label"]) == new_label
+        mark_dirty()
+
+    def rebuild_print_panel() -> None:
+        for child in print_frame.winfo_children():
+            child.destroy()
+        ttk.Radiobutton(print_frame, text="不设打印题", value="",
+                        variable=print_var,
+                        command=on_print_selected).pack(anchor="w", padx=8,
+                                                        pady=2)
+        for row in problem_rows:
+            ttk.Radiobutton(print_frame,
+                            text=f"{row['label']} {row['name']}",
+                            value=str(row["label"]), variable=print_var,
+                            command=on_print_selected).pack(anchor="w", padx=8,
+                                                            pady=1)
+        sync_print_panel()
 
     def refresh_problems() -> None:
         tree.delete(*tree.get_children())
@@ -412,20 +506,8 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
             star = "*" if row["changed"] else " "
             tree.insert("", "end", iid=str(i), tags=(tag,),
                         values=(row["ordinal"], row["label"], star + row["name"],
-                                "■ " + row["color"],
-                                "●" if row["print"] else "—"))
-
-    def on_problem_click(event) -> None:
-        if tree.identify_column(event.x) != "#5":  # 打印题 column
-            return
-        row_id = tree.identify_row(event.y)
-        if not row_id:
-            return
-        toggle_print_problem(problem_rows, int(row_id))
-        mark_dirty()
-        refresh_problems()
-
-    tree.bind("<Button-1>", on_problem_click)
+                                "■ " + row["color"]))
+        sync_print_panel()
 
     def problem_index() -> int | None:
         sel = tree.selection()
@@ -471,6 +553,12 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
                command=pick_custom_color).pack(anchor="w", pady=8)
     ttk.Label(pside, text="（选中一行后点色板/选择颜色）",
               foreground="#666").pack(anchor="w")
+
+    ttk.Separator(pside, orient="horizontal").pack(fill="x", pady=8)
+    # print-problem picker: global single-select radio list (replaces the
+    # old 打印题 table column); "" = 不设打印题
+    print_frame = ttk.LabelFrame(pside, text="打印题")
+    print_frame.pack(fill="x", pady=(4, 0))
 
     # ---------------- Tab 2: team groups ----------------
     tframe = ttk.Frame(notebook)
@@ -653,12 +741,123 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
     ttk.Button(batchbtns, text="清除分组", command=batch_clear).pack(
         side="left", padx=4)
 
+    # ---------------- seat / members / coaches panel ----------------
+    # edits team_meta for the single selected team; disabled (and cleared)
+    # when the selection is empty or multi-select
+    meta_frame = ttk.LabelFrame(tframe, text="座位号 / 成员")
+    meta_frame.pack(side="right", fill="y", padx=8, pady=8)
+
+    ttk.Label(meta_frame, text="座位号").pack(anchor="w", padx=8, pady=(8, 0))
+    seat_entry = ttk.Entry(meta_frame, width=16)
+    seat_entry.pack(fill="x", padx=8)
+
+    ttk.Label(meta_frame, text="队员").pack(anchor="w", padx=8, pady=(6, 0))
+    members_list = tk.Listbox(meta_frame, height=5, exportselection=False)
+    members_list.pack(fill="x", padx=8)
+    member_btns = ttk.Frame(meta_frame)
+    member_btns.pack(fill="x", padx=8, pady=(2, 6))
+
+    ttk.Label(meta_frame, text="教练").pack(anchor="w", padx=8, pady=(6, 0))
+    coaches_list = tk.Listbox(meta_frame, height=3, exportselection=False)
+    coaches_list.pack(fill="x", padx=8)
+    coach_btns = ttk.Frame(meta_frame)
+    coach_btns.pack(fill="x", padx=8, pady=(2, 8))
+
+    # every editable widget in the panel; state normal ⇔ one team selected
+    meta_editables: list = [seat_entry, members_list, coaches_list]
+
+    edit_state = {"tid": None}
+
+    def set_meta_enabled(enabled: bool) -> None:
+        for w in meta_editables:
+            w.configure(state="normal" if enabled else "disabled")
+        for btn in member_btns.winfo_children() + coach_btns.winfo_children():
+            btn.configure(state="normal" if enabled else "disabled")
+
+    def flush_seat() -> None:
+        # Entry has no reliable change callback — commit on selection
+        # change / save so the edit is never lost
+        tid = edit_state["tid"]
+        if tid is not None:
+            team_meta.setdefault(tid, {"seat": "", "members": [],
+                                       "coaches": []})["seat"] = \
+                seat_entry.get().strip()
+
+    def load_team_meta() -> None:
+        flush_seat()
+        sel = ttree.selection()
+        tid = sel[0] if len(sel) == 1 else None
+        edit_state["tid"] = tid
+        seat_entry.delete(0, "end")
+        members_list.delete(0, "end")
+        coaches_list.delete(0, "end")
+        set_meta_enabled(tid is not None)
+        if tid is None:
+            return
+        meta = team_meta.setdefault(tid, {"seat": "", "members": [],
+                                          "coaches": []})
+        seat_entry.insert(0, meta["seat"])
+        for name in meta["members"]:
+            members_list.insert("end", name)
+        for name in meta["coaches"]:
+            coaches_list.insert("end", name)
+
+    def add_person(kind: str, lb, title: str) -> None:
+        tid = edit_state["tid"]
+        if tid is None:
+            messagebox.showinfo("座位号 / 成员", "请先选择一个队伍", parent=root)
+            return
+        name = simpledialog.askstring("座位号 / 成员", f"添加{title}：",
+                                      parent=root)
+        if name is None or not name.strip():
+            return
+        flush_seat()
+        meta = team_meta.setdefault(tid, {"seat": "", "members": [],
+                                          "coaches": []})
+        meta[kind].append(name.strip())
+        lb.insert("end", name.strip())
+        mark_dirty()
+
+    def remove_person(kind: str, lb) -> None:
+        tid = edit_state["tid"]
+        sel = lb.curselection()
+        if tid is None or not sel:
+            return
+        flush_seat()
+        idx = sel[0]
+        lb.delete(idx)
+        team_meta.setdefault(tid, {"seat": "", "members": [],
+                                   "coaches": []})[kind].pop(idx)
+        mark_dirty()
+
+    def seat_edited(*_args) -> None:
+        if edit_state["tid"] is not None:
+            mark_dirty()
+
+    seat_entry.bind("<KeyRelease>", seat_edited)
+
+    ttk.Button(member_btns, text="＋添加",
+               command=lambda: add_person("members", members_list,
+                                          "队员")).pack(side="left")
+    ttk.Button(member_btns, text="移除",
+               command=lambda: remove_person("members", members_list)).pack(
+        side="left", padx=4)
+    ttk.Button(coach_btns, text="＋添加",
+               command=lambda: add_person("coaches", coaches_list,
+                                          "教练")).pack(side="left")
+    ttk.Button(coach_btns, text="移除",
+               command=lambda: remove_person("coaches", coaches_list)).pack(
+        side="left", padx=4)
+
+    ttree.bind("<<TreeviewSelect>>", lambda _e: load_team_meta())
+    set_meta_enabled(False)  # nothing selected at startup
+
     notebook.add(pframe, text="题目颜色")
     notebook.add(tframe, text="队伍分组")
 
     # ---------------- bottom bar buttons ----------------
     def refetch() -> None:
-        nonlocal problem_rows, team_rows
+        nonlocal problem_rows, team_rows, team_meta
         if state["dirty"] and not messagebox.askyesno(
                 "重新拉取数据", "有未保存的修改，重新拉取将丢弃它们（颜色除外）。继续？",
                 parent=root):
@@ -677,26 +876,35 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         current_print = next((r["label"] for r in problem_rows if r["print"]),
                              None)
         problem_rows = build_problem_rows(problems2, old_colors, current_print)
-        saved_teams = {tid: {"group_ids": sorted(gs)}
-                       for tid, gs in assignments.items() if gs}
+        flush_seat()
+        old_meta = team_meta
+        saved_teams = build_teams_setup(assignments, old_meta)
         team_rows = build_team_rows(teams2, group_defs, saved_teams)
         for r in team_rows:
             assignments.setdefault(r["id"], set(r["group_ids"]))
+        # seat/members/coaches edits survive the refetch for teams that
+        # still exist (same spirit as the preserved group assignments)
+        team_meta = {r["id"]: old_meta.get(
+            r["id"], {"seat": r["seat"], "members": list(r["members"]),
+                      "coaches": list(r["coaches"])})
+            for r in team_rows}
         # refetch rebuilds team_rows in 学号 order — reset the view sort
         sort_state["col"] = None
         sort_state["reverse"] = False
         set_team_headings()
         refresh_problems()
+        rebuild_print_panel()
         refresh_teams()
         refresh_groups()
+        load_team_meta()
 
     def save() -> None:
+        flush_seat()
         problems_colors = {
             r["label"]: {"color": r["color"], "rgb": r["rgb"]}
             for r in problem_rows if r["changed"] and not r["print"]}
         groups_out = {gid: {"name": g["name"]} for gid, g in group_defs.items()}
-        teams_out = {tid: {"group_ids": sorted(gs)}
-                     for tid, gs in assignments.items() if gs}
+        teams_out = build_teams_setup(assignments, team_meta)
         print_problem = next((r["label"] for r in problem_rows if r["print"]),
                              None)
         write_manual_setup(manual_dir, problems_colors, groups_out, teams_out,
@@ -712,7 +920,7 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         root.destroy()
 
     def change_connection() -> None:
-        nonlocal problem_rows, team_rows
+        nonlocal problem_rows, team_rows, team_meta
         new_conn = launch_connection_dialog(root, settings, manual_dir,
                                             dict(conn))
         if new_conn is None:
@@ -738,20 +946,31 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
                 "比赛 ID 已变更，是否清空分组指派和打印题选择？"
                 "（颜色和分组定义保留）", parent=root):
             assignments.clear()
+            team_meta.clear()
             print_label = None
-        saved_teams = {tid: {"group_ids": sorted(gs)}
-                       for tid, gs in assignments.items() if gs}
+        else:
+            # commit the in-flight seat edit before it is swept away by
+            # the rebuild below (and only when we are NOT clearing)
+            flush_seat()
+        saved_teams = build_teams_setup(assignments, team_meta)
         problem_rows = build_problem_rows(problems2, old_colors, print_label)
         team_rows = build_team_rows(teams2, group_defs, saved_teams)
         for r in team_rows:
             assignments.setdefault(r["id"], set(r["group_ids"]))
+        old_meta = team_meta
+        team_meta = {r["id"]: old_meta.get(
+            r["id"], {"seat": r["seat"], "members": list(r["members"]),
+                      "coaches": list(r["coaches"])})
+            for r in team_rows}
         # refetch rebuilds team_rows in 学号 order — reset the view sort
         sort_state["col"] = None
         sort_state["reverse"] = False
         set_team_headings()
         refresh_problems()
+        rebuild_print_panel()
         refresh_teams()
         refresh_groups()
+        load_team_meta()
 
     ttk.Button(bar, text="↺ 重新拉取数据", command=refetch).pack(
         side="left", padx=4, pady=4)
@@ -766,9 +985,11 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
     # compute their geometry against the real (non-zero) parent
     root.update_idletasks()
     refresh_problems()
+    rebuild_print_panel()
     refresh_groups()
     refresh_teams()
     set_team_headings()
+    load_team_meta()
     root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
 
@@ -789,10 +1010,10 @@ def main() -> None:
     try:
         problems, teams = _fetch_remote(conn, settings.pta_requests_per_second)
     except PtaAuthError:
-        # connection may be stale — fall back to the dialog
+        # connection may be stale — fall back to the dialog (dict(conn)
+        # keeps the optional print_server prefilled too)
         conn = launch_connection_dialog(
-            None, settings, settings.manual_dir,
-            {"contest_id": conn["contest_id"], "pta_cookie": conn["pta_cookie"]})
+            None, settings, settings.manual_dir, dict(conn))
         if conn is None:
             raise SystemExit(1)
         problems, teams = _fetch_remote(conn, settings.pta_requests_per_second)

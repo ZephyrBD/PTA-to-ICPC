@@ -395,8 +395,14 @@ def test_meta_compilers_seed_languages_with_zero_submissions():
     manual = dict(MANUAL, languages={"cpp": {"name": "C++"}})
     data = translate("999", manual, [], [], None, NOW, meta=META)
     by_name = {l["name"] for l in data.languages.values()}
+    # merged standard ids: GXX/JAVAC/CANGJIE → cpp/java/CANGJIE; the manual
+    # "cpp" entry already claimed the merged id, so its name wins
     assert data.languages["cpp"]["name"] == "C++"          # manual entry
-    assert {"C++ (g++)", "Java (javac)", "仓颉 (cjc)"} <= by_name  # meta
+    assert {"Java (javac)", "仓颉 (cjc)"} <= by_name  # meta
+    # meta-seeded languages carry the known-languages extensions table
+    assert data.languages["cpp"]["extensions"] == [
+        "cc", "cpp", "cxx", "c++", "C"]
+    assert data.languages["java"]["extensions"] == ["java"]
 
 
 def test_submissions_still_add_language_not_in_meta():
@@ -406,16 +412,16 @@ def test_submissions_still_add_language_not_in_meta():
     data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW, meta=META)
     by_name = {l["name"] for l in data.languages.values()}
     assert "Fortran95 (gfortran)" in by_name  # observed, not in meta compilers
-    assert "C++ (g++)" in by_name              # meta still seeded
+    assert "C++" in by_name                   # meta still seeded (manual name)
     assert data.submissions["701"]["language_id"] == \
         sanitize_id("Fortran95 (gfortran)")
 
 
 def test_manual_language_entry_wins_over_meta():
-    lid = sanitize_id("C++ (g++)")  # the id meta would seed for GXX
-    manual = dict(MANUAL, languages={lid: {"name": "Manual C++"}})
+    # GXX maps to the standard id "cpp"; a manual entry under that id wins
+    manual = dict(MANUAL, languages={"cpp": {"name": "Manual C++"}})
     data = translate("999", manual, [], [], None, NOW, meta=META)
-    assert data.languages[lid]["name"] == "Manual C++"
+    assert data.languages["cpp"]["name"] == "Manual C++"
 
 
 # --- judgements enrichment (run_time/score), task 13 ----------------------
@@ -618,3 +624,90 @@ def test_translate_without_print_problem_keeps_missing_labels():
     # manual_print None must never match a missing label/problem_index
     data = translate("999", MANUAL, [{}], [{}], None, NOW)
     assert "0" in data.problems  # id falls back to index, label to letter
+
+
+# --- seat / members / coaches -> label + persons (task: 扮演 DOMjudge) -----
+
+def test_manual_seat_overrides_team_label():
+    manual = dict(MANUAL, teams={"D22": {"seat": "A12"}})
+    data = translate("999", manual, [], [], None, NOW)
+    assert data.teams["D22"]["label"] == "A12"
+
+
+def test_empty_seat_keeps_roster_label():
+    manual = dict(MANUAL, teams={"1901545194649161728": {"seat": ""}})
+    data = translate("999", manual, [], [], ROSTER, NOW)
+    assert data.teams["1901545194649161728"]["label"] == "2022000001"
+
+
+def test_team_object_never_carries_seat_members_coaches():
+    manual = dict(MANUAL, teams={"D22": {"seat": "A12", "members": ["甲", "乙"],
+                                         "coaches": ["丙"]}})
+    data = translate("999", manual, [], [], None, NOW)
+    team = data.teams["D22"]
+    assert "seat" not in team
+    assert "members" not in team
+    assert "coaches" not in team
+
+
+def test_manual_members_become_persons():
+    manual = dict(MANUAL, teams={"D22": {"members": ["甲", "乙"]}})
+    data = translate("999", manual, [], [], None, NOW)
+    assert data.persons["D22-m0"] == {"id": "D22-m0", "name": "甲",
+                                      "role": "contestant",
+                                      "team_ids": ["D22"]}
+    assert data.persons["D22-m1"]["name"] == "乙"
+    assert data.persons["D22-m1"]["team_ids"] == ["D22"]
+
+
+def test_manual_coaches_become_persons():
+    manual = dict(MANUAL, teams={"D22": {"coaches": ["丙"]}})
+    data = translate("999", manual, [], [], None, NOW)
+    assert data.persons["D22-c0"] == {"id": "D22-c0", "name": "丙",
+                                      "role": "coach", "team_ids": ["D22"]}
+
+
+def test_empty_person_names_skipped_but_indices_keep_positions():
+    manual = dict(MANUAL, teams={"D22": {"members": ["", "甲"],
+                                         "coaches": ["", "丙"]}})
+    data = translate("999", manual, [], [], None, NOW)
+    assert "D22-m0" not in data.persons  # empty name dropped
+    assert data.persons["D22-m1"]["name"] == "甲"  # index preserved
+    assert "D22-c0" not in data.persons
+    assert data.persons["D22-c1"]["name"] == "丙"
+    assert data.persons["D22-c1"]["role"] == "coach"
+
+
+def test_base_manual_has_no_persons():
+    data = t()
+    assert data.persons == {}
+
+
+def test_submission_language_display_name_maps_to_std_id():
+    rows = [dict(RAW_SUBMISSIONS[0], language="C++ (g++)")]
+    data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
+    assert data.submissions["101"]["language_id"] == "cpp"
+
+
+def test_submission_language_ids_referential_integrity():
+    """Every submission language_id (standard-mapped and unknown-fallback)
+    must exist in data.languages (spec: submissions.language_id is a
+    reference)."""
+    rows = [dict(RAW_SUBMISSIONS[0], language="GXX"),
+            dict(RAW_SUBMISSIONS[1], language="SOME_WEIRD_LANG")]
+    data = translate("999", MANUAL, rows, RAW_PROBLEMS, None, NOW)
+    assert {s["language_id"] for s in data.submissions.values()} <= set(
+        data.languages)
+    assert data.submissions["101"]["language_id"] == "cpp"  # GXX → standard
+    assert data.submissions["102"]["language_id"] == "SOME_WEIRD_LANG"
+    assert "SOME_WEIRD_LANG" in data.languages  # fallback id advertised
+
+
+def test_merged_enum_first_seen_display_name_wins():
+    manual = dict(MANUAL, languages={})  # no manual claim on id "cpp"
+    meta_a = dict(META, compilers=["CLANGXX", "GXX"])
+    data_a = translate("999", manual, [], [], None, NOW, meta=meta_a)
+    assert data_a.languages["cpp"]["name"] == "C++ (clang++)"
+    meta_b = dict(META, compilers=["GXX", "CLANGXX"])
+    data_b = translate("999", manual, [], [], None, NOW, meta=meta_b)
+    assert data_b.languages["cpp"]["name"] == "C++ (g++)"

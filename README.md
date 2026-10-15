@@ -5,7 +5,7 @@
 用法：
 1. `python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"`
 2. 复制 `config.example.json` 为 `config.json`（**可选**，仅服务参数：host/port/轮询/限流，缺省即默认值）；复制 `manual.example/` 为 `manual/` 并按需编辑。cookie 与 contest_id 不在 `config.json` 里，由 setup GUI 写入 `manual/setup-connection.json`（已 gitignore）
-3. **首次运行**：`.venv/Scripts/python -m pta2ccs.setup` —— 一次性 GUI。首次启动弹出**比赛连接**对话框（填 contest_id + PTA cookie，预填 `config.json` 里残留的旧值；之后可随时用顶栏「🔗 比赛连接…」按钮重新打开），然后从 PTA 拉取题目和队伍，设置每题颜色与自定义队伍分组，题目表新增**打印题**单选列（标一题，其数据不进 CDS），写出 `manual/setup-*.json` 后退出。可重复运行（再次运行会预填上次的选择，分组 id 稳定复用）
+3. **首次运行**：`.venv/Scripts/python -m pta2ccs.setup` —— 一次性 GUI。首次启动弹出**比赛连接**对话框（填 contest_id + PTA cookie，预填 `config.json` 里残留的旧值；可选填**打印服务器 URL**；之后可随时用顶栏「🔗 比赛连接…」按钮重新打开），然后从 PTA 拉取题目和队伍，设置每题颜色与自定义队伍分组，题目侧栏用**打印题**单选面板标一题（其数据不进 CDS），队伍侧栏填**座位号 / 队员 / 教练**，写出 `manual/setup-*.json` 后退出。可重复运行（再次运行会预填上次的选择，分组 id 稳定复用）
 4. 在 `pta2ccs/` 目录下 `.venv/Scripts/python -m pta2ccs`（连接读自 `manual/setup-connection.json`，缺失时打印错误并退出；从 `config.json` 构建 app 并启动 uvicorn；没有模块级 `app`，不能用 `uvicorn pta2ccs.app:app`）
 5. `GET http://127.0.0.1:8000/` → api info；`GET /healthz` → 就绪状态
 
@@ -28,6 +28,22 @@
 
 - **题目颜色** `/problems[].color` / `rgb`：按题号（PTA label，如 `1-1`）设置，覆盖内置 PALETTE 默认色。
 - **自定义分组** `/groups` 与队伍上的 `group_ids` 数组（打星 / 正式 / 女队 …）：与 PTA 用户组（学校）完全独立，由操作者在 GUI 中定义；`group_ids` 为空数组表示不属于任何自定义分组。可用 `GET /contests/{id}/scoreboard?group_id=g1` 只看某分组。
-- **打印题** `setup-problems.json` 的 `print_problem`：题目表中单选一题标为"打印题"。该题的**全部**数据（题目、submissions、judgements、runs、sources）都不进 CDS；其提交不做详情拉取（打印 API 会单独处理）。
+- **打印题** `setup-problems.json` 的 `print_problem`：题目侧栏单选面板标一题。该题的**全部**数据（题目、submissions、judgements、runs、sources）都不进 CDS。未配置打印服务器时其提交不做详情拉取；配置了 `PRINT_SERVER` 则走打印流水线（见下）。
+- **座位号 / 队员 / 教练** `setup-teams.json` 的 `teams[id]` 上的 `seat` / `members` / `coaches`（GUI 队伍侧栏「座位号 / 成员」面板编辑）：`seat` 覆盖队伍 `label`；`members` / `coaches` 不出现在队伍对象上，而是生成 `/persons`（contestant / coach，id 形如 `D22-m0` / `D22-c0`）。空值省略不写。
 
-设计文档：`../docs/superpowers/specs/2026-10-13-pta2ccs-design.md`
+### 打印流水线（`PRINT_SERVER`，扮演 DOMjudge）
+
+`manual/setup-connection.json` 里的可选 `print_server`（连接对话框第三个输入框）开启后，每轮轮询把**打印题**的提交单独分流：
+
+1. 从提交列表分区出来（不进 translate/store/scoreboard），逐条拉取源码（每轮最多 5 条，顺序执行；429 触发全局冷却）。
+2. store 应用新快照后，按 DOMjudge 打印脚本的 multipart 形状 `POST {print_server}`（`file` + `filename` / `lang` / `tname` / `team` / `location` / `group` 字段，文件名 `题目号.扩展名`，语言为 Contest API 标准 id）。
+3. 已发送 id 记在 `print_sent.json`（cwd 相对路径，gitignore），成功即持久化，重启不重发；缺失 / 损坏文件从空集开始。
+4. 源码为空 / 拉取失败 / POST 失败各计一次尝试，累计超过 10 次永久跳过并打 error 日志。
+
+未配置 `print_server` 时保持旧行为：打印题数据直接丢弃、不写任何状态。
+
+### 语言 id（`/languages`）
+
+编译器枚举与显示名统一映射到 Contest API 2026-01 标准语言 id（`GXX`/`CLANGXX` → `cpp`、`JAVAC` → `java`、`PYTHON3` → `python3` …），并带 known-languages 附录的 `extensions` 表；未知值经 `sanitize_id` 原样保留。提交的 `language_id` 同步用标准 id。
+
+设计文档：`../docs/superpowers/specs/2026-10-13-pta2ccs-design.md`、`../docs/superpowers/specs/2026-10-15-print-domjudge-design.md`
