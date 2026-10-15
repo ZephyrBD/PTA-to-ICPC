@@ -29,9 +29,13 @@ ACCESS_ENDPOINTS = [
     {"type": "state", "properties": [
         "started", "ended", "frozen", "thawed", "finalized", "end_of_updates"]},
     {"type": "groups", "properties": ["id", "name"]},
-    {"type": "organizations", "properties": ["id", "name"]},
+    {"type": "organizations", "properties": [
+        "id", "name", "externalid", "formal_name", "shortname", "country",
+        "country_flag", "logo", "affiliation_id", "icpc_id"]},
     {"type": "teams", "properties": [
-        "id", "name", "label", "group_ids", "organization_id", "icpc_id"]},
+        "id", "name", "label", "group_ids", "organization_id", "icpc_id",
+        "externalid", "display_name", "affiliation_id", "public_description",
+        "hidden", "location"]},
     {"type": "persons", "properties": ["id", "name", "role", "team_ids"]},
     {"type": "problems", "properties": [
         "id", "label", "name", "ordinal", "color", "rgb",

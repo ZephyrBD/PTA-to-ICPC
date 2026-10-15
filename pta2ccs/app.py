@@ -7,10 +7,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import (JSONResponse, PlainTextResponse, RedirectResponse,
+                               Response)
 
 from .balloons import (BalloonState, build_balloon, build_contestproblem,
-                       build_domjudge_contest, first_ac_pairs, time_sort_key)
+                       build_domjudge_contest, build_domjudge_org,
+                       build_domjudge_team, first_ac_pairs, time_sort_key)
 from .config import Settings, load_connection, load_manual, load_settings
 from .models import error_body, make_access, make_api_info
 from .poller import Poller
@@ -98,10 +100,6 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
             raise HTTPException(404, error_body(404, "contest data not ready"))
         return snap
 
-    @app.get("/")
-    async def api_info():
-        return make_api_info()
-
     @app.get("/healthz")
     async def healthz():
         snap = store.snapshot()
@@ -111,35 +109,51 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
             base.update(poller.status)
         return base
 
-    @app.get("/contests/{cid}/access")
+    # --- /api/v4/ explicit routes (all registered before the catch-alls) ---
+    # Shared paths (contests/teams/organizations) serve DOMjudge-superset
+    # shapes; the remaining collections keep the Contest API shape through
+    # the catch-alls at the bottom.
+
+    @app.get("/api/v4/")
+    async def api_info():
+        return make_api_info()
+
+    @app.get("/api/v4/contests")
+    async def v4_contests():
+        snap = store.snapshot()
+        if snap is None:
+            return []
+        return [build_domjudge_contest(snap)]
+
+    @app.get("/api/v4/contests/{cid}")
+    async def v4_contest(cid: str):
+        require_cid(cid)
+        return build_domjudge_contest(require_snap())
+
+    @app.get("/api/v4/contests/{cid}/access")
     async def access(cid: str):
         require_cid(cid)
         return make_access()
 
-    @app.get("/contests/{cid}")
-    async def contest(cid: str):
-        require_cid(cid)
-        return require_snap().contest
-
-    @app.get("/contests/{cid}/state")
+    @app.get("/api/v4/contests/{cid}/state")
     async def state(cid: str):
         require_cid(cid)
         return require_snap().state
 
-    @app.get("/contests/{cid}/scoreboard")
+    @app.get("/api/v4/contests/{cid}/scoreboard")
     async def scoreboard(cid: str, group_id: str | None = None):
         require_cid(cid)
         now = _now_local(tz)
         return compute_scoreboard(require_snap(), now, group_id=group_id)
 
     # registered before the {collection} catch-all so the literal
-    # /contests/{cid}/event-feed path is not shadowed (matched first)
+    # /api/v4/contests/{cid}/event-feed path is not shadowed (matched first)
     from .event_feed import register as _register_feed
     _register_feed(app, store, contest_id)
 
     # source-file route (also before the catch-all routes): the Contest
     # API files href points here; program text comes from snapshot.sources
-    @app.get("/contests/{cid}/submissions/{sid}/files/{filename}")
+    @app.get("/api/v4/contests/{cid}/submissions/{sid}/files/{filename}")
     async def submission_file(cid: str, sid: str, filename: str):
         require_cid(cid)
         snap = require_snap()
@@ -150,17 +164,23 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
             raise HTTPException(404, error_body(404, f"file not found: {filename}"))
         return PlainTextResponse(program, media_type="text/plain; charset=utf-8")
 
-    # DOMjudge v4 balloon surface (/api/v4/): confined to the /api/v4/
-    # prefix so the Contest API surface stays untouched, and registered
-    # before the {collection} catch-all (like event_feed). GET balloons
-    # reconciles BalloonState against the fresh snapshot on every request.
-    @app.get("/api/v4/contests")
-    async def v4_contests():
-        snap = store.snapshot()
-        if snap is None:
-            return []
-        return [build_domjudge_contest(snap)]
+    # DOMjudge-superset teams/organizations (explicit, shadow the catch-all)
+    @app.get("/api/v4/contests/{cid}/teams")
+    async def v4_teams(cid: str):
+        require_cid(cid)
+        snap = require_snap()
+        return [build_domjudge_team(snap, tid) for tid in sorted(snap.teams)]
 
+    @app.get("/api/v4/contests/{cid}/organizations")
+    async def v4_organizations(cid: str):
+        require_cid(cid)
+        snap = require_snap()
+        return [build_domjudge_org(snap, oid)
+                for oid in sorted(snap.organizations)]
+
+    # DOMjudge v4 balloon surface (registered before the {collection}
+    # catch-all, like event_feed). GET balloons reconciles BalloonState
+    # against the fresh snapshot on every request.
     @app.get("/api/v4/contests/{cid}/balloons")
     async def v4_balloons(cid: str, todo: bool = False):
         require_cid(cid)
@@ -208,7 +228,12 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
                 404, f"balloon not found: {balloonId}"))
         return Response(status_code=204)
 
-    @app.get("/contests/{cid}/{collection}")
+    # --- catch-alls (Contest API shape for the remaining collections) ---
+    # The COLLECTIONS whitelist keeps teams/organizations so the item
+    # routes /teams/{id} and /organizations/{id} still serve the Contest
+    # API shape; the explicit collection routes above shadow them.
+
+    @app.get("/api/v4/contests/{cid}/{collection}")
     async def collection(cid: str, collection: str, request: Request):
         require_cid(cid)
         if collection not in COLLECTIONS:
@@ -224,7 +249,7 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
                     items = [i for i in items if i.get(fname) == want]
         return items
 
-    @app.get("/contests/{cid}/{collection}/{item_id}")
+    @app.get("/api/v4/contests/{cid}/{collection}/{item_id}")
     async def item(cid: str, collection: str, item_id: str):
         require_cid(cid)
         if collection not in COLLECTIONS:
@@ -234,7 +259,30 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
         if obj is None:
             name = ITEM_SINGULAR.get(collection, collection)
             raise HTTPException(404, error_body(404, f"{name} not found: {item_id}"))
+        # Note: the teams/organizations ITEM shape is the raw Contest API
+        # object while their collection routes serve the DOMjudge superset
+        # (externalid/display_name/affiliation_id/...). No consumer fetches
+        # a single team/org; the CDS tolerates the extra properties.
         return obj
+
+    # --- legacy redirects (registered last so they never shadow /api/v4/) ---
+    # bare /contests must 301 straight to the list — otherwise Starlette's
+    # trailing-slash handling makes it a 307→301→307 triple hop.
+    @app.get("/contests")
+    async def legacy_contests_redirect(request: Request):
+        return RedirectResponse(request.url.replace(path="/api/v4/contests"),
+                                status_code=301)
+
+    @app.get("/contests/{rest:path}")
+    async def legacy_contest_redirect(request: Request, rest: str):
+        new_path = f"/api/v4/contests/{rest}"
+        return RedirectResponse(request.url.replace(path=new_path),
+                                status_code=301)
+
+    @app.get("/")
+    async def legacy_root_redirect(request: Request):
+        return RedirectResponse(request.url.replace(path="/api/v4/"),
+                                status_code=301)
 
     return app
 

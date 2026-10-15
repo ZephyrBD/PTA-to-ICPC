@@ -108,7 +108,7 @@ def test_initial_feed_contains_snapshot_events():
     store.apply_all(translate("c1", MANUAL, [sub("1")], [{"id": "A", "title": "A"}], None, NOW))
     # brief read "the first 5 lines", but the snapshot replays 17 events and
     # "submissions" is #16 — the driver collects the whole replay instead
-    events, _ = asyncio.run(_stream(app_for(store), "/contests/c1/event-feed"))
+    events, _ = asyncio.run(_stream(app_for(store), "/api/v4/contests/c1/event-feed"))
     types = {e["type"] for e in events}
     assert "submissions" in types
     assert all("token" in e for e in events)
@@ -124,7 +124,7 @@ def test_since_token_replay_only_newer():
     # judgements "2"); the brief's ">=3 lines" cap could never be satisfied
     # on an idle stream without waiting out the 60s heartbeat
     events, _ = asyncio.run(_stream(app_for(store),
-                                    f"/contests/c1/event-feed?since_token={checkpoint}"))
+                                    f"/api/v4/contests/c1/event-feed?since_token={checkpoint}"))
     assert events, "expected replay of events newer than checkpoint"
     assert all(e["token"] > checkpoint for e in events)
     assert any(e.get("id") == "2" for e in events)
@@ -134,7 +134,7 @@ def test_invalid_since_token_400():
     store = Store()
     store.apply_all(translate("c1", MANUAL, [sub("1")], [{"id": "A", "title": "A"}], None, NOW))
     c = make(store)
-    r = c.get("/contests/c1/event-feed?since_token=999999999")
+    r = c.get("/api/v4/contests/c1/event-feed?since_token=999999999")
     assert r.status_code == 400
     assert r.json()["code"] == 400
 
@@ -143,7 +143,7 @@ def test_heartbeat_on_idle_stream(monkeypatch):
     monkeypatch.setattr("pta2ccs.event_feed.HEARTBEAT_SECONDS", 0.05)
     monkeypatch.setattr("pta2ccs.event_feed.POLL_SECONDS", 0.01)
     _, saw_blank = asyncio.run(_stream(app_for(Store()),
-                                       "/contests/c1/event-feed",
+                                       "/api/v4/contests/c1/event-feed",
                                        until_blank=True, timeout=2.0))
     assert saw_blank
 
@@ -160,7 +160,7 @@ def test_initial_feed_contains_persons_create_events():
     store.apply_all(translate("c1", persons_manual(), [sub("1")],
                               [{"id": "A", "title": "A"}], None, NOW))
     events, _ = asyncio.run(_stream(app_for(store),
-                                    "/contests/c1/event-feed"))
+                                    "/api/v4/contests/c1/event-feed"))
     persons = [e for e in events if e["type"] == "persons"]
     assert {e["id"] for e in persons} == {"D22-m0", "D22-c0"}
     created = next(e for e in persons if e["id"] == "D22-m0")
@@ -182,7 +182,7 @@ def test_removed_person_emits_delete_event_with_null_data():
                               None, NOW))
     events, _ = asyncio.run(_stream(
         app_for(store),
-        f"/contests/c1/event-feed?since_token={checkpoint}"))
+        f"/api/v4/contests/c1/event-feed?since_token={checkpoint}"))
     persons = [e for e in events if e["type"] == "persons"]
     assert {e["id"] for e in persons} == {"D22-m0", "D22-c0"}
     assert all(e["data"] is None for e in persons)  # delete: data null

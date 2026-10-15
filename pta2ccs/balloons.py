@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from .timefmt import parse_reltime
+from .timefmt import parse_reltime, to_iso_time
 from .translate import ContestData
 
 log = logging.getLogger(__name__)
@@ -36,6 +36,83 @@ def first_ac_pairs(data: ContestData) -> dict[tuple[str, str], dict]:
                 continue
             out[key] = {"time": sub["time"]}
     return out
+
+
+def _to_epoch(iso) -> int:
+    """ISO timestamp → Unix epoch seconds; an unparseable/missing value
+    (defensive) becomes 0 so downstream numeric math never NaNs. A naive
+    (tz-less) input is treated as unusable → 0 rather than interpreted in
+    the host's local timezone."""
+    try:
+        d = dt.datetime.fromisoformat(str(iso))
+    except (TypeError, ValueError):
+        return 0
+    if d.tzinfo is None:
+        return 0
+    return int(d.timestamp())
+
+
+def build_domjudge_team(data: ContestData, team_id: str) -> dict:
+    """DOMjudge v4 team object (superset of the Contest API team shape).
+    public_description packs the team's members/coaches from data.persons
+    (role contestant/coach, team_ids contains the team id); None when the
+    team has none. The team is looked up defensively — a missing team
+    resolves to id fallbacks, never an exception."""
+    tid = str(team_id)
+    team = data.teams.get(tid) or {}
+    name = str(team.get("name") or "") or tid
+    label = team.get("label")
+    label = str(label) if label not in (None, "") else None
+    org_id = team.get("organization_id")
+    org_id = str(org_id) if org_id not in (None, "") else None
+    icpc_id = team.get("icpc_id")
+    icpc_id = str(icpc_id) if icpc_id not in (None, "") else None
+    members = [str(p["name"]) for p in data.persons.values()
+               if tid in (p.get("team_ids") or [])
+               and p.get("role") == "contestant"]
+    coaches = [str(p["name"]) for p in data.persons.values()
+               if tid in (p.get("team_ids") or [])
+               and p.get("role") == "coach"]
+    description_parts = []
+    if members:
+        description_parts.append("队员：" + "、".join(members))
+    if coaches:
+        description_parts.append("教练：" + "、".join(coaches))
+    return {
+        "id": tid,
+        "externalid": tid,
+        "name": name,
+        "display_name": name,
+        "organization_id": org_id,
+        "group_ids": list(team.get("group_ids") or []),
+        "affiliation_id": org_id,
+        "label": label,
+        "icpc_id": icpc_id,
+        "public_description": ("；".join(description_parts)
+                               if description_parts else None),
+        "hidden": False,
+        "location": label,
+    }
+
+
+def build_domjudge_org(data: ContestData, org_id: str) -> dict:
+    """DOMjudge v4 organization object (superset shape). The organization
+    is looked up defensively — a missing org resolves to id fallbacks."""
+    oid = str(org_id)
+    org = data.organizations.get(oid) or {}
+    name = str(org.get("name") or "") or oid
+    return {
+        "id": oid,
+        "externalid": oid,
+        "name": name,
+        "formal_name": name,
+        "shortname": name,
+        "country": None,
+        "country_flag": [],
+        "logo": [],
+        "affiliation_id": oid,
+        "icpc_id": None,
+    }
 
 
 def build_contestproblem(data: ContestData, problem_id: str) -> dict | None:
@@ -98,7 +175,7 @@ def build_balloon(data: ContestData, entry: dict, balloonid: int, done: bool,
     total = dict(sorted((total_map.get(team_id) or {}).items()))
     return {
         "balloonid": int(balloonid),
-        "time": sub_time,
+        "time": _to_epoch(sub_time),
         "problem": label,
         "contestproblem": build_contestproblem(data, problem_id),
         "team": f"{team_id}: {team_name}",
@@ -115,15 +192,27 @@ def build_balloon(data: ContestData, entry: dict, balloonid: int, done: bool,
 
 def build_domjudge_contest(data: ContestData) -> dict:
     """DOMjudge v4 contest object for the snapshot's single contest
-    (shortname = name by user decision; end_time from _build_state)."""
+    (shortname = name by user decision). end_time = start + duration so the
+    planned end is advertised even while the contest is still running
+    (start missing/unparseable → None, never the state.ended gate)."""
     contest = data.contest
+    end_time = None
+    start_s = contest.get("start_time")
+    if start_s:
+        try:
+            end_time = to_iso_time(
+                dt.datetime.fromisoformat(start_s)
+                + parse_reltime(contest.get("duration")))
+        except (TypeError, ValueError, AttributeError):
+            # AttributeError: parse_reltime(None) raises on .startswith
+            end_time = None
     return {
         "id": contest["id"],
         "name": contest["name"],
         "formal_name": contest["formal_name"],
         "shortname": contest["name"],
         "start_time": contest["start_time"],
-        "end_time": data.state.get("ended") or None,
+        "end_time": end_time,
         "duration": contest["duration"],
         "scoreboard_freeze_duration": contest["scoreboard_freeze_duration"],
         "scoreboard_thaw_time": None,
@@ -137,13 +226,24 @@ def build_domjudge_contest(data: ContestData) -> dict:
     }
 
 
-def time_sort_key(iso: str) -> dt.datetime:
-    """ISO timestamp → aware datetime for ordering; an unparseable value
-    (defensive) sorts as the earliest possible time."""
+def time_sort_key(iso) -> dt.datetime:
+    """ISO timestamp OR numeric Unix epoch → aware datetime for ordering;
+    an unparseable value (defensive) sorts as the earliest possible time.
+    Accepting both keeps first_ac_pairs (ISO) and rendered balloons (epoch
+    seconds) on the same ordering path."""
+    if isinstance(iso, (int, float)) and not isinstance(iso, bool):
+        try:
+            return dt.datetime.fromtimestamp(iso, tz=dt.timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
     try:
-        return dt.datetime.fromisoformat(str(iso))
+        d = dt.datetime.fromisoformat(str(iso))
     except (TypeError, ValueError):
         return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    # never mix naive (host-local) and aware (UTC) datetimes in one sort
+    if d.tzinfo is None:
+        return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    return d
 
 
 class BalloonState:

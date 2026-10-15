@@ -3,9 +3,10 @@ import datetime as dt
 import json
 import logging
 
-from pta2ccs.balloons import (BalloonState, build_balloon,
+from pta2ccs.balloons import (BalloonState, _to_epoch, build_balloon,
                               build_contestproblem, build_domjudge_contest,
-                              first_ac_pairs)
+                              build_domjudge_org, build_domjudge_team,
+                              first_ac_pairs, time_sort_key)
 from pta2ccs.translate import ContestData, translate
 
 TZ = dt.timezone(dt.timedelta(hours=8))
@@ -118,7 +119,8 @@ def test_build_balloon():
                          "time": "2023-05-21T09:10:00+08:00"},
                         1, False, total)
     assert row["balloonid"] == 1
-    assert row["time"] == "2023-05-21T09:10:00+08:00"
+    assert row["time"] == _to_epoch("2023-05-21T09:10:00+08:00")
+    assert isinstance(row["time"], int) and not isinstance(row["time"], bool)
     assert row["problem"] == "A"
     assert row["contestproblem"]["id"] == "A"
     assert row["team"] == "D22: 一队"
@@ -138,7 +140,16 @@ def test_build_balloon_derives_time_from_data():
     data = make_data()
     row = build_balloon(data, {"team_id": "D22", "problem_id": "A"},
                         1, False, make_total_map(data))
-    assert row["time"] == "2023-05-21T09:10:00+08:00"
+    assert row["time"] == _to_epoch("2023-05-21T09:10:00+08:00")
+
+
+def test_build_balloon_epoch_consistent_with_iso_origin():
+    # numeric epoch seconds must agree with the ISO first-AC time
+    data = make_data()
+    row = build_balloon(data, {"team_id": "D22", "problem_id": "A"},
+                        1, False, make_total_map(data))
+    iso = first_ac_pairs(data)[("D22", "A")]["time"]
+    assert row["time"] == int(dt.datetime.fromisoformat(iso).timestamp())
 
 
 def test_build_balloon_missing_org_group_and_name():
@@ -173,7 +184,9 @@ def test_build_domjudge_contest():
     assert c["formal_name"] == "省赛 2023"
     assert c["shortname"] == c["name"]  # shortname == name
     assert c["start_time"] == "2023-05-21T09:00:00+08:00"
-    assert c["end_time"] == make_data().state["ended"]  # None before the end
+    # end_time = start + duration even while the contest is running
+    # (NOW 10:00, planned end 14:00) — never gated on state.ended
+    assert c["end_time"] == "2023-05-21T14:00:00+08:00"
     assert c["duration"] == "5:00:00"
     assert c["scoreboard_thaw_time"] is None
     assert c["banner"] == []
@@ -186,6 +199,116 @@ def test_build_domjudge_contest():
 def test_build_domjudge_contest_ended():
     data = make_data(now=dt.datetime(2023, 5, 21, 15, 0, 0, tzinfo=TZ))
     assert build_domjudge_contest(data)["end_time"] == "2023-05-21T14:00:00+08:00"
+
+
+def test_build_domjudge_contest_missing_or_bad_start_end_time_none():
+    manual = {"contest": {"name": "省赛", "duration": "5:00:00",
+                          "pta_timezone": "+08:00"}}
+    data = translate("c1", manual, SUBS, PROBLEMS, ROSTER, NOW)
+    assert data.contest["start_time"] is None
+    assert build_domjudge_contest(data)["end_time"] is None
+    # unparseable start_time (injected post-translate; translate itself
+    # rejects it in _build_state) → end_time None, never an exception
+    data = make_data()
+    data.contest["start_time"] = "not-a-time"
+    assert build_domjudge_contest(data)["end_time"] is None
+    # missing duration (parse_reltime(None) would AttributeError) → None
+    data = make_data()
+    data.contest["start_time"] = "2023-05-21T09:00:00+08:00"
+    data.contest["duration"] = None
+    assert build_domjudge_contest(data)["end_time"] is None
+
+
+# --- _to_epoch --------------------------------------------------------------
+
+
+def test_to_epoch():
+    assert _to_epoch("2023-05-21T09:10:00+08:00") == int(
+        dt.datetime.fromisoformat("2023-05-21T09:10:00+08:00").timestamp())
+    assert _to_epoch("2023-05-21T01:10:00+00:00") == \
+        _to_epoch("2023-05-21T09:10:00+08:00")  # same instant
+    # unparseable / missing → 0 (defensive, never an exception)
+    assert _to_epoch(None) == 0
+    assert _to_epoch("garbage") == 0
+    assert _to_epoch("") == 0
+    # naive (tz-less) input is ambiguous → 0, never host-local interpretation
+    assert _to_epoch("2023-05-21T09:10:00") == 0
+
+
+def test_time_sort_key_accepts_epoch_and_iso():
+    iso = "2023-05-21T09:10:00+08:00"
+    epoch = _to_epoch(iso)
+    # both branches yield the same instant (aware UTC)
+    assert time_sort_key(iso) == time_sort_key(epoch)
+    # epoch ordering matches ISO ordering
+    later_iso = "2023-05-21T10:00:00+08:00"
+    assert time_sort_key(epoch) < time_sort_key(later_iso)
+    # naive ISO is not mixed into a comparison with aware values
+    assert time_sort_key("2023-05-21T09:10:00") == dt.datetime.min.replace(
+        tzinfo=dt.timezone.utc)
+    assert time_sort_key("garbage") == dt.datetime.min.replace(
+        tzinfo=dt.timezone.utc)
+
+
+# --- build_domjudge_team / build_domjudge_org -------------------------------
+
+
+def persons_manual() -> dict:
+    return {"contest": dict(MANUAL["contest"]),
+            "teams": {"D22": {"members": ["甲", "乙"], "coaches": ["丙"]}}}
+
+
+def test_build_domjudge_team():
+    data = translate("c1", persons_manual(), SUBS, PROBLEMS, ROSTER, NOW)
+    team = build_domjudge_team(data, "D22")
+    assert team["id"] == team["externalid"] == "D22"
+    assert team["name"] == team["display_name"] == "一队"
+    assert team["organization_id"] == team["affiliation_id"] == "org1"
+    assert team["group_ids"] == []
+    assert team["label"] == team["location"] == "2022000001"  # roster label
+    assert team["icpc_id"] is None
+    assert team["public_description"] == "队员：甲、乙；教练：丙"
+    assert team["hidden"] is False
+
+
+def test_build_domjudge_team_public_description_none_without_persons():
+    data = make_data()  # no persons in MANUAL
+    team = build_domjudge_team(data, "D22")
+    assert team["public_description"] is None
+    # only members → only the 队员 section; only coaches → only 教练 section
+    manual = {"contest": dict(MANUAL["contest"]),
+              "teams": {"D22": {"members": ["甲"]}}}
+    data = translate("c1", manual, SUBS, PROBLEMS, ROSTER, NOW)
+    assert build_domjudge_team(data, "D22")["public_description"] == "队员：甲"
+    manual = {"contest": dict(MANUAL["contest"]),
+              "teams": {"D22": {"coaches": ["丙"]}}}
+    data = translate("c1", manual, SUBS, PROBLEMS, ROSTER, NOW)
+    assert build_domjudge_team(data, "D22")["public_description"] == "教练：丙"
+
+
+def test_build_domjudge_team_unknown_team_id_falls_back():
+    data = make_data()
+    team = build_domjudge_team(data, "ZZZ")
+    assert team["id"] == team["externalid"] == "ZZZ"
+    assert team["name"] == team["display_name"] == "ZZZ"
+    assert team["organization_id"] is None
+    assert team["label"] is None
+    assert team["public_description"] is None
+
+
+def test_build_domjudge_org():
+    data = make_data()
+    org = build_domjudge_org(data, "org1")
+    assert org["id"] == org["externalid"] == "org1"
+    assert org["name"] == org["formal_name"] == org["shortname"] == "某大学"
+    assert org["country"] is None
+    assert org["country_flag"] == []
+    assert org["logo"] == []
+    assert org["affiliation_id"] == "org1"
+    assert org["icpc_id"] is None
+    # unknown org → id fallback, never an exception
+    org = build_domjudge_org(data, "nope")
+    assert org["name"] == "nope"
 
 
 # --- BalloonState -----------------------------------------------------------

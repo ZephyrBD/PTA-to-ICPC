@@ -15,7 +15,7 @@ POLL_SECONDS = 0.5
 
 
 def register(app: FastAPI, store: Store, contest_id: str) -> None:
-    @app.get(f"/contests/{contest_id}/event-feed")
+    @app.get(f"/api/v4/contests/{contest_id}/event-feed")
     async def event_feed(request: Request, since_token: int | None = None):
         if since_token is not None and not store.is_valid_since_token(since_token):
             raise HTTPException(400, error_body(
