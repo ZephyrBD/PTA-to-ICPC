@@ -7,6 +7,7 @@ import pta2ccs.setup as setup
 from pta2ccs.setup import (
     _residual_config_prefill,
     allocate_group_id,
+    build_contest_setup,
     build_problem_rows,
     build_team_rows,
     build_teams_setup,
@@ -15,7 +16,9 @@ from pta2ccs.setup import (
     sort_team_rows,
     sort_teams_by_label,
     toggle_print_problem,
+    validate_contest_times,
     write_connection,
+    write_contest_setup,
     write_manual_setup,
 )
 
@@ -195,7 +198,8 @@ def test_write_manual_setup_creates_directory(tmp_path):
 
 def test_load_manual_setup_missing_files(tmp_path):
     assert load_manual_setup(tmp_path) == {
-        "problems": {}, "groups": {}, "teams": {}, "print_problem": None}
+        "problems": {}, "groups": {}, "teams": {}, "contest": {},
+        "print_problem": None}
 
 
 class _StubClient:
@@ -420,3 +424,82 @@ def test_write_connection_omits_print_server_when_unset(
     data = json.loads((tmp_path / "setup-connection.json").read_text(
         encoding="utf-8"))
     assert data == {"contest_id": "c1", "pta_cookie": "cookie"}
+
+
+# --- 比赛设置 tab: contest section (task 22) ------------------------------
+
+def test_build_contest_setup_keeps_only_nonblank():
+    assert build_contest_setup({
+        "start_time": "2026-10-13T16:00:00+08:00", "duration": "51:00:00",
+        "scoreboard_freeze_duration": "", "finalized_at": "auto"}) == {
+        "start_time": "2026-10-13T16:00:00+08:00", "duration": "51:00:00"}
+
+
+def test_build_contest_setup_never_and_explicit():
+    assert build_contest_setup({"finalized_at": "never"}) == {
+        "finalized_at": "never"}
+    assert build_contest_setup(
+        {"finalized_at": "2026-10-14T17:00:00+08:00"}) == {
+        "finalized_at": "2026-10-14T17:00:00+08:00"}
+    # garbage finalization values are dropped (become automatic)
+    assert build_contest_setup({"finalized_at": "junk"}) == {}
+
+
+def test_build_contest_setup_empty():
+    assert build_contest_setup({}) == {}
+    assert build_contest_setup(None) == {}
+
+
+def test_validate_contest_times_all_blank_is_ok():
+    ok, err, payload = validate_contest_times("", "", "", "")
+    assert ok and err == "" and payload == {"contest": {}}
+
+
+def test_validate_contest_times_accepts_valid():
+    ok, err, payload = validate_contest_times(
+        "2026-10-13T16:00:00+08:00", "51:00:00", "45:00:00", "never")
+    assert ok, err
+    assert payload == {"contest": {
+        "start_time": "2026-10-13T16:00:00+08:00", "duration": "51:00:00",
+        "scoreboard_freeze_duration": "45:00:00", "finalized_at": "never"}}
+
+
+def test_validate_contest_times_start_requires_offset():
+    ok, err, _ = validate_contest_times("2026-10-13T16:00:00", "", "", "")
+    assert not ok and "时区" in err
+
+
+def test_validate_contest_times_start_bad_format():
+    ok, err, _ = validate_contest_times("2026/10/13 16:00", "", "", "")
+    assert not ok and err
+
+
+def test_validate_contest_times_duration_bad():
+    ok, err, _ = validate_contest_times("", "abc", "", "")
+    assert not ok and "时长" in err
+
+
+def test_validate_contest_times_freeze_bad():
+    ok, err, _ = validate_contest_times("", "", "0", "")
+    assert not ok and "封榜" in err
+
+
+def test_validate_contest_times_finalized_bad():
+    ok, err, _ = validate_contest_times("", "", "", "tomorrow")
+    assert not ok and "定稿" in err
+
+
+def test_write_contest_setup_round_trip(tmp_path):
+    write_contest_setup(tmp_path, {"start_time": "2026-10-13T16:00:00+08:00",
+                                   "duration": "51:00:00"})
+    f = tmp_path / setup.SETUP_CONTEST_FILE
+    data = json.loads(f.read_text(encoding="utf-8"))
+    assert data == {"contest": {"start_time": "2026-10-13T16:00:00+08:00",
+                                "duration": "51:00:00"}}
+    assert load_manual_setup(tmp_path)["contest"] == data["contest"]
+
+
+def test_load_manual_setup_contest_ignores_non_dict(tmp_path):
+    (tmp_path / setup.SETUP_CONTEST_FILE).write_text(
+        json.dumps({"contest": "nope"}), encoding="utf-8")
+    assert load_manual_setup(tmp_path)["contest"] == {}

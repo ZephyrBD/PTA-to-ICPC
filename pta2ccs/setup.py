@@ -19,18 +19,21 @@ Data semantics (see README / docs):
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import re
 from pathlib import Path
 
 from .config import Settings, load_connection, load_settings
 from .pta.client import PtaAuthError, PtaClient
+from .timefmt import parse_finalized_at, parse_reltime, to_iso_time
 from .translate import PALETTE
 
 SETUP_PROBLEMS_FILE = "setup-problems.json"
 SETUP_GROUPS_FILE = "setup-groups.json"
 SETUP_TEAMS_FILE = "setup-teams.json"
 SETUP_CONNECTION_FILE = "setup-connection.json"
+SETUP_CONTEST_FILE = "setup-contest.json"
 
 _GROUP_ID_RE = re.compile(r"g(\d+)\Z")
 
@@ -204,21 +207,106 @@ async def fetch_setup_data(client) -> tuple[list[dict], list[dict]]:
     return problems, teams
 
 
+def build_contest_setup(contest: dict) -> dict:
+    """contest section for setup-contest.json (pure; empty values omitted).
+
+    All four keys are optional. ``start_time`` / ``duration`` /
+    ``scoreboard_freeze_duration`` are kept only when non-blank;
+    ``finalized_at`` is kept only when it is ``"never"`` or an ISO-8601
+    string (blank / ``"auto"`` = the automatic rule).
+    """
+    contest = contest or {}
+    out: dict = {}
+    for key in ("start_time", "duration", "scoreboard_freeze_duration"):
+        value = str(contest.get(key) or "").strip()
+        if value:
+            out[key] = value
+    fa = str(contest.get("finalized_at") or "").strip()
+    if fa == "never":
+        out["finalized_at"] = "never"
+    elif fa and parse_finalized_at(fa)[0] == "at":
+        out["finalized_at"] = fa
+    return out
+
+
+def validate_contest_times(start_time, duration, freeze, finalized_at,
+                           ) -> tuple[bool, str, dict]:
+    """Validate the 比赛设置 tab fields and return the normalized payload.
+
+    Blank field = automatic (no error). A non-blank ``start_time`` must be
+    ISO-8601 with an explicit UTC offset (``Z`` counts) — naive input is
+    rejected (the Contest API TIME type is absolute). ``duration`` and
+    ``freeze`` must parse via ``timefmt.parse_reltime`` and be positive.
+    ``finalized_at`` is ""/"auto"/"never" or ISO-8601 (offset optional;
+    naive is read as UTC by ``parse_finalized_at``). Returns
+    ``(ok, error message, {"contest": {...}})``.
+    """
+    contest: dict = {}
+    st = str(start_time or "").strip()
+    if st:
+        try:
+            when = dt.datetime.fromisoformat(st.replace("Z", "+00:00"))
+        except ValueError:
+            return False, "开始时间格式不对：应为 ISO-8601 且带时区偏移，例如 2026-10-13T16:00:00+08:00", {}
+        if when.tzinfo is None:
+            return False, "开始时间必须带时区偏移（如 +08:00 或 Z），例如 2026-10-13T16:00:00+08:00", {}
+        contest["start_time"] = to_iso_time(when)
+    dur = str(duration or "").strip()
+    if dur:
+        try:
+            td = parse_reltime(dur)
+        except (ValueError, TypeError, IndexError):
+            return False, "时长格式不对：应为 时:分:秒（如 51:00:00）", {}
+        if td.total_seconds() <= 0:
+            return False, "时长必须大于 0", {}
+        contest["duration"] = dur
+    fz = str(freeze or "").strip()
+    if fz:
+        try:
+            td = parse_reltime(fz)
+        except (ValueError, TypeError, IndexError):
+            return False, "封榜时长格式不对：应为 时:分:秒（如 45:00:00）", {}
+        if td.total_seconds() <= 0:
+            return False, "封榜时长必须大于 0", {}
+        contest["scoreboard_freeze_duration"] = fz
+    fa = str(finalized_at or "").strip()
+    if fa and fa != "auto":
+        mode, when = parse_finalized_at(fa)
+        if mode == "never":
+            contest["finalized_at"] = "never"
+        elif mode == "at":
+            contest["finalized_at"] = to_iso_time(when)
+        else:
+            return False, "定稿时间格式不对：应为空、auto、never 或 ISO-8601 时间", {}
+    return True, "", {"contest": contest}
+
+
+def write_contest_setup(manual_dir, contest: dict) -> None:
+    """Write ``manual_dir/setup-contest.json`` (UTF-8, indent 2)."""
+    manual_dir = Path(manual_dir)
+    manual_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"contest": build_contest_setup(contest)}
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    (manual_dir / SETUP_CONTEST_FILE).write_text(text, encoding="utf-8")
+
+
 def load_manual_setup(manual_dir) -> dict:
-    """Read the three ``setup-*.json`` files if present.
+    """Read the four ``setup-*.json`` files if present.
 
     Returns ``{"problems": {...}, "groups": {...}, "teams": {...},
-    "print_problem": str | None}`` with empty dicts / None for missing or
-    short files (a malformed JSON file is ignored — the server's
-    ``config.load_manual`` performs the strict validation). ``print_problem``
-    is the top-level sibling of ``"problems"`` in setup-problems.json.
+    "contest": {...}, "print_problem": str | None}`` with empty dicts /
+    None for missing or short files (a malformed JSON file is ignored —
+    the server's ``config.load_manual`` performs the strict validation).
+    ``print_problem`` is the top-level sibling of ``"problems"`` in
+    setup-problems.json.
     """
     out: dict = {"problems": {}, "groups": {}, "teams": {},
-                 "print_problem": None}
+                 "contest": {}, "print_problem": None}
     manual_dir = Path(manual_dir)
     for key, fname in (("problems", SETUP_PROBLEMS_FILE),
                        ("groups", SETUP_GROUPS_FILE),
-                       ("teams", SETUP_TEAMS_FILE)):
+                       ("teams", SETUP_TEAMS_FILE),
+                       ("contest", SETUP_CONTEST_FILE)):
         f = manual_dir / fname
         if not f.exists():
             continue
@@ -430,6 +518,7 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
     team_meta = {r["id"]: {"seat": r["seat"], "members": list(r["members"]),
                            "coaches": list(r["coaches"])}
                  for r in team_rows}
+    contest_saved = saved.get("contest") or {}
 
     state = {"dirty": False}
     ui = {"combo_map": {}}
@@ -855,6 +944,68 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
     notebook.add(pframe, text="题目颜色")
     notebook.add(tframe, text="队伍分组")
 
+    # ---------------- Tab 3: contest times ----------------
+    # manual/setup-contest.json overrides the PTA-derived start/duration/
+    # freeze and the finalization rule; blank fields stay automatic.
+    cframe = ttk.Frame(notebook)
+    contest_form = ttk.Frame(cframe)
+    contest_form.pack(anchor="nw", padx=12, pady=12)
+
+    start_var = tk.StringVar(value=str(contest_saved.get("start_time") or ""))
+    dur_var = tk.StringVar(value=str(contest_saved.get("duration") or ""))
+    freeze_var = tk.StringVar(
+        value=str(contest_saved.get("scoreboard_freeze_duration") or ""))
+    fa_saved = str(contest_saved.get("finalized_at") or "")
+    if fa_saved == "never":
+        fa_mode = "never"
+    elif fa_saved:
+        fa_mode = "at"
+    else:
+        fa_mode = "auto"
+    fa_mode_var = tk.StringVar(value=fa_mode)
+    fa_iso_var = tk.StringVar(value=fa_saved if fa_mode == "at" else "")
+
+    def add_contest_field(row: int, label: str, var, hint: str, **kwargs):
+        ttk.Label(contest_form, text=label).grid(
+            row=row, column=0, sticky="w", pady=4)
+        entry = ttk.Entry(contest_form, textvariable=var, width=32, **kwargs)
+        entry.grid(row=row, column=1, sticky="w", padx=8, pady=4)
+        ttk.Label(contest_form, text=hint, foreground="#666").grid(
+            row=row, column=2, sticky="w")
+        entry.bind("<KeyRelease>", lambda _e: mark_dirty())
+        return entry
+
+    add_contest_field(0, "开始时间", start_var,
+                      "ISO-8601 需带时区，例如 2026-10-13T16:00:00+08:00")
+    add_contest_field(1, "时长", dur_var, "时:分:秒，例如 51:00:00")
+    add_contest_field(2, "封榜时长", freeze_var, "时:分:秒，例如 45:00:00")
+
+    ttk.Label(contest_form, text="定稿时间").grid(
+        row=3, column=0, sticky="nw", pady=4)
+    fa_radios = ttk.Frame(contest_form)
+    fa_radios.grid(row=3, column=1, columnspan=2, sticky="w", pady=4)
+    fa_entry = ttk.Entry(fa_radios, textvariable=fa_iso_var, width=32)
+
+    def sync_fa_entry() -> None:
+        fa_entry.configure(
+            state="normal" if fa_mode_var.get() == "at" else "disabled")
+
+    def on_fa_mode() -> None:
+        mark_dirty()
+        sync_fa_entry()
+
+    ttk.Radiobutton(fa_radios, text="自动（留空）", value="auto",
+                    variable=fa_mode_var, command=on_fa_mode).pack(anchor="w")
+    ttk.Radiobutton(fa_radios, text="指定时间", value="at",
+                    variable=fa_mode_var, command=on_fa_mode).pack(anchor="w")
+    ttk.Radiobutton(fa_radios, text="不定稿", value="never",
+                    variable=fa_mode_var, command=on_fa_mode).pack(anchor="w")
+    fa_entry.pack(anchor="w", padx=24, pady=(2, 0))
+    fa_entry.bind("<KeyRelease>", lambda _e: mark_dirty())
+    sync_fa_entry()
+
+    notebook.add(cframe, text="比赛设置")
+
     # ---------------- bottom bar buttons ----------------
     def refetch() -> None:
         nonlocal problem_rows, team_rows, team_meta
@@ -899,6 +1050,17 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
         load_team_meta()
 
     def save() -> None:
+        if fa_mode_var.get() == "never":
+            finalized_at = "never"
+        elif fa_mode_var.get() == "at":
+            finalized_at = fa_iso_var.get()
+        else:
+            finalized_at = ""
+        ok, error, payload = validate_contest_times(
+            start_var.get(), dur_var.get(), freeze_var.get(), finalized_at)
+        if not ok:
+            messagebox.showerror("比赛设置", error, parent=root)
+            return
         flush_seat()
         problems_colors = {
             r["label"]: {"color": r["color"], "rgb": r["rgb"]}
@@ -909,9 +1071,12 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
                              None)
         write_manual_setup(manual_dir, problems_colors, groups_out, teams_out,
                            print_problem)
+        write_contest_setup(manual_dir, payload["contest"])
         state["dirty"] = False
         root.title("pta2ccs setup — 首次运行配置")
-        messagebox.showinfo("保存到 manual", f"已写入 {manual_dir}", parent=root)
+        messagebox.showinfo(
+            "保存到 manual",
+            f"已写入 {manual_dir}\n比赛设置改动需重启服务器后生效。", parent=root)
 
     def on_close() -> None:
         if state["dirty"] and not messagebox.askyesno(

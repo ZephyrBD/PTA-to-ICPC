@@ -12,8 +12,10 @@ from pta2ccs.store import Store
 from pta2ccs.translate import translate
 
 NOW = dt.datetime(2023, 5, 21, 10, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+ENDED = dt.datetime(2023, 5, 21, 15, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
 MANUAL = {"contest": {"start_time": "2023-05-21T09:00:00+08:00",
                       "duration": "5:00:00", "pta_timezone": "+08:00"}}
+PROBLEMS = [{"id": "A", "title": "A"}]
 
 
 def sub(sid: str) -> dict:
@@ -111,7 +113,10 @@ def test_initial_feed_contains_snapshot_events():
     events, _ = asyncio.run(_stream(app_for(store), "/api/v4/contests/c1/event-feed"))
     types = {e["type"] for e in events}
     assert "submissions" in types
+    assert "contest" in types and "contests" not in types
     assert all("token" in e for e in events)
+    # spec: notification token is a string
+    assert all(isinstance(e["token"], str) for e in events)
 
 
 def test_since_token_replay_only_newer():
@@ -126,7 +131,7 @@ def test_since_token_replay_only_newer():
     events, _ = asyncio.run(_stream(app_for(store),
                                     f"/api/v4/contests/c1/event-feed?since_token={checkpoint}"))
     assert events, "expected replay of events newer than checkpoint"
-    assert all(e["token"] > checkpoint for e in events)
+    assert all(int(e["token"]) > checkpoint for e in events)
     assert any(e.get("id") == "2" for e in events)
 
 
@@ -137,6 +142,16 @@ def test_invalid_since_token_400():
     r = c.get("/api/v4/contests/c1/event-feed?since_token=999999999")
     assert r.status_code == 400
     assert r.json()["code"] == 400
+
+
+def test_non_numeric_since_token_400():
+    store = Store()
+    store.apply_all(translate("c1", MANUAL, [sub("1")], [{"id": "A", "title": "A"}], None, NOW))
+    c = make(store)
+    r = c.get("/api/v4/contests/c1/event-feed?since_token=abc")
+    assert r.status_code == 400
+    assert r.json()["code"] == 400
+    assert "abc" in r.json()["message"]
 
 
 def test_heartbeat_on_idle_stream(monkeypatch):
@@ -167,8 +182,7 @@ def test_initial_feed_contains_persons_create_events():
     assert created["data"]["name"] == "甲"
     assert created["data"]["role"] == "contestant"
     assert created["data"]["team_ids"] == ["D22"]
-    assert created["token"] > 0
-
+    assert int(created["token"]) > 0
 
 def test_removed_person_emits_delete_event_with_null_data():
     store = Store()
@@ -186,4 +200,38 @@ def test_removed_person_emits_delete_event_with_null_data():
     persons = [e for e in events if e["type"] == "persons"]
     assert {e["id"] for e in persons} == {"D22-m0", "D22-c0"}
     assert all(e["data"] is None for e in persons)  # delete: data null
-    assert all(e["token"] > checkpoint for e in persons)
+    assert all(int(e["token"]) > checkpoint for e in persons)
+
+
+# --- state ordering on the wire (task 22 review blocker) -------------------
+
+def test_full_replay_ends_with_state_event():
+    store = Store()
+    store.apply_all(translate("c1", MANUAL, [sub("1")], PROBLEMS, None, ENDED))
+    events, _ = asyncio.run(_stream(app_for(store),
+                                    "/api/v4/contests/c1/event-feed"))
+    assert any(e["type"] == "submissions" for e in events)
+    # the end_of_updates state event must be the last thing on the wire: a
+    # direct check of the final element fails if any event follows it
+    assert events[-1]["type"] == "state"
+    assert events[-1]["data"]["end_of_updates"] is not None
+
+
+def test_finalizing_poll_state_event_is_last_line():
+    store = Store()
+    before = dt.datetime(2023, 5, 21, 10, 0, 0,
+                         tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    store.apply_all(translate("c1", MANUAL, [sub("1")], PROBLEMS, None, before))
+    checkpoint = store.latest_token()
+    # finalizing poll also introduces a submission + judgement: those must
+    # stream BEFORE the state event, never after
+    store.apply_all(translate("c1", MANUAL, [sub("1"), sub("2")], PROBLEMS,
+                              None, ENDED))
+    assert store._events[-1].type == "state"
+    assert store._events[-1].data["end_of_updates"] is not None
+    events, _ = asyncio.run(_stream(
+        app_for(store),
+        f"/api/v4/contests/c1/event-feed?since_token={checkpoint}"))
+    assert any(e["type"] == "submissions" for e in events)
+    assert events[-1]["type"] == "state"
+    assert events[-1]["data"]["end_of_updates"] is not None

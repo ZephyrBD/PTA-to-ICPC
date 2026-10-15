@@ -8,7 +8,14 @@ from .models import sanitize_id
 from .pta.client import COMPILER_LANGUAGES
 from .pta.langs import extensions_for, std_language_id
 from .pta.verdicts import PTA_STATUS_VERDICT_MAP, PTA_VERDICT_MAP
-from .timefmt import parse_offset, parse_pta_time, parse_reltime, to_iso_time, to_reltime
+from .timefmt import (
+    parse_finalized_at,
+    parse_offset,
+    parse_pta_time,
+    parse_reltime,
+    to_iso_time,
+    to_reltime,
+)
 
 log = logging.getLogger(__name__)
 
@@ -125,7 +132,12 @@ def _build_contest(contest_id: str, manual_contest: dict | None,
     }
 
 
-def _build_state(contest: dict, now: dt.datetime) -> dict:
+def _build_state(contest: dict, now: dt.datetime, *, finalized_at=None,
+                 judgements: dict | None = None) -> dict:
+    # spec 2026-01 strict ordering: started < frozen < ended < thawed <
+    # end_of_updates and ended < finalized < end_of_updates. Times are all
+    # derived from `now` (never a future timestamp) so a finalized contest
+    # also satisfies "must not change" once the poll freezes it.
     state = {"started": None, "ended": None, "frozen": None,
              "thawed": None, "finalized": None, "end_of_updates": None}
     start_s = contest.get("start_time")
@@ -140,6 +152,49 @@ def _build_state(contest: dict, now: dt.datetime) -> dict:
     freeze = parse_reltime(contest.get("scoreboard_freeze_duration", "0:00:00"))
     if freeze.total_seconds() > 0:
         state["frozen"] = to_iso_time(end - freeze)
+
+    tz = end.tzinfo
+    mode, when = parse_finalized_at(finalized_at)
+    if mode == "auto" and finalized_at not in (None, ""):
+        # "auto"/"  auto  " parse to auto without a warning; anything else
+        # (garbage string, or a non-str like 42/[]) silently fell back to
+        # auto and must be surfaced.
+        if not (isinstance(finalized_at, str)
+                and finalized_at.strip() == "auto"):
+            log.warning("unparseable contest.finalized_at; using auto rule")
+    jlist = list((judgements or {}).values())
+    pending = [j for j in jlist if not j.get("judgement_type_id")]
+    if mode == "auto":
+        # vacuous "all judged" is impossible: zero submissions never
+        # auto-finalize (an explicit timestamp is the escape hatch).
+        # `now` is UTC-aware (poller) while `end` carries the contest
+        # offset — compare AWARE datetimes (string compare would be
+        # offset-sensitive and delay/fire early), then emit in the contest
+        # offset at whole-second precision so the strict
+        # `ended < finalized/thawed < end_of_updates` holds as strings too.
+        if jlist and not pending and state["ended"] is not None:
+            now_s = now.replace(microsecond=0)
+            base = now_s - dt.timedelta(seconds=1)
+            if base > end:
+                base_l = base.astimezone(tz)
+                if state["frozen"] is not None:
+                    state["thawed"] = to_iso_time(base_l)
+                state["finalized"] = to_iso_time(base_l)
+                state["end_of_updates"] = to_iso_time(now_s.astimezone(tz))
+    elif mode == "at" and when is not None:
+        if now >= end:
+            # max() over aware datetimes is offset-safe; `when` is aware
+            # (parse_finalized_at reads a naive ISO as UTC). Normalize to
+            # whole seconds in the contest offset so the emitted strings
+            # stay strictly ordered (to_iso_time drops microseconds).
+            t = max(when, end + dt.timedelta(seconds=1))
+            t = t.replace(microsecond=0).astimezone(tz)
+            if state["frozen"] is not None:
+                state["thawed"] = to_iso_time(t)
+            state["finalized"] = to_iso_time(t)
+            state["end_of_updates"] = to_iso_time(t + dt.timedelta(seconds=1))
+    # the "ended but pending verdicts" warning is emitted (deduped) by the
+    # poller — _build_state is called every poll and must stay pure.
     return state
 
 
@@ -150,7 +205,6 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
     mc = manual.get("contest") or {}
     tz = mc.get("pta_timezone", "+08:00")
     data.contest = _build_contest(contest_id, mc, meta)
-    data.state = _build_state(data.contest, now)
 
     # manual overrides keyed by id; teams are special-cased (task: seat /
     # members / coaches) — seat overrides label, members/coaches never
@@ -205,14 +259,15 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
             "color": p.get("color", entry.get("color", color)),
             "rgb": p.get("rgb", entry.get("rgb", rgb)),
         })
-        # limits from PTA programmingProblemConfig (time in ms → reltime,
-        # memory/code in KB); manual entries win via setdefault — a manual
-        # time_limit/memory_limit/code_limit is never overwritten
+        # limits from PTA programmingProblemConfig (time in ms → seconds,
+        # memory KB → MiB; code stays KiB); manual entries win via
+        # setdefault — a manual time_limit/memory_limit/code_limit is
+        # never overwritten
         if p.get("time_limit_ms") is not None:
             entry.setdefault("time_limit",
-                             to_reltime(dt.timedelta(milliseconds=p["time_limit_ms"])))
+                             round(p["time_limit_ms"] / 1000, 3))
         if p.get("memory_limit_kb") is not None:
-            entry.setdefault("memory_limit", p["memory_limit_kb"])
+            entry.setdefault("memory_limit", p["memory_limit_kb"] // 1024)
         if p.get("code_limit_kb") is not None:
             entry.setdefault("code_limit", p["code_limit_kb"])
         # CCS problem.test_data_count (required integer) from the PTA cases
@@ -376,6 +431,11 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
                     "exit_code": r.get("exitcode"),
                     "judge_time": to_iso_time(ts),
                 }
+    # state is built after the loop: auto-finalization needs the full
+    # verdict set (a null judgement_type_id blocks it)
+    data.state = _build_state(data.contest, now,
+                              finalized_at=mc.get("finalized_at"),
+                              judgements=data.judgements)
     # persons from manual team members/coaches: reference integrity first —
     # a person is only emitted when its team survived into data.teams.
     for tid, i, name, role in pending_persons:

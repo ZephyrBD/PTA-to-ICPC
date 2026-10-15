@@ -89,7 +89,7 @@ def test_build_contestproblem():
     assert cp["label"] == "A"
     assert cp["short_name"] == "A"  # short_name == label
     assert cp["name"] == "题A"
-    assert cp["time_limit"] == 100  # reltime "0:00:00.100" → integer ms
+    assert cp["time_limit"] == 0.1  # number of seconds (Contest API 2026-01)
     assert cp["statement"] == []
     assert cp["attachments"] == []
     # no time_limit → null

@@ -37,6 +37,26 @@ def to_reltime(td: dt.timedelta) -> str:
     return f"{base}.{ms:03d}" if ms else base
 
 
+def parse_finalized_at(value) -> tuple[str, dt.datetime | None]:
+    # tri-state for manual contest.finalized_at: ("auto", None) is the
+    # default rule, "never" disables finalization, "at" pins an explicit
+    # time. Never raises — a caller must be able to log-and-continue.
+    if not isinstance(value, str):
+        return ("auto", None)
+    s = value.strip()
+    if s in ("", "auto"):
+        return ("auto", None)
+    if s == "never":
+        return ("never", None)
+    try:
+        when = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return ("auto", None)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    return ("at", when)
+
+
 def parse_reltime(s: str) -> dt.timedelta:
     negative = s.startswith("-")
     if negative:

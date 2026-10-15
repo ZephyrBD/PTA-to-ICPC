@@ -3,7 +3,13 @@ import datetime as dt
 import pytest
 
 from pta2ccs.models import error_body, make_access, make_api_info, sanitize_id
-from pta2ccs.timefmt import parse_pta_time, parse_reltime, to_iso_time, to_reltime
+from pta2ccs.timefmt import (
+    parse_finalized_at,
+    parse_pta_time,
+    parse_reltime,
+    to_iso_time,
+    to_reltime,
+)
 
 
 def test_parse_offset():
@@ -60,6 +66,31 @@ def test_parse_reltime_milliseconds():
     assert parse_reltime("0:00:01.500") == dt.timedelta(seconds=1, milliseconds=500)
 
 
+def test_parse_finalized_at_modes():
+    assert parse_finalized_at(None) == ("auto", None)
+    assert parse_finalized_at("") == ("auto", None)
+    assert parse_finalized_at("auto") == ("auto", None)
+    assert parse_finalized_at("  auto  ") == ("auto", None)
+    assert parse_finalized_at("never") == ("never", None)
+
+
+def test_parse_finalized_at_iso_variants():
+    utc = dt.timezone.utc
+    assert parse_finalized_at("2023-05-21T09:00:00Z") == (
+        "at", dt.datetime(2023, 5, 21, 9, 0, 0, tzinfo=utc))
+    # naive ISO → treated as UTC
+    assert parse_finalized_at("2023-05-21T09:00:00") == (
+        "at", dt.datetime(2023, 5, 21, 9, 0, 0, tzinfo=utc))
+    assert parse_finalized_at("2023-05-21T09:00:00+08:00") == (
+        "at", dt.datetime(2023, 5, 21, 9, 0, 0,
+                          tzinfo=dt.timezone(dt.timedelta(hours=8))))
+
+
+def test_parse_finalized_at_garbage_is_auto_without_raising():
+    for bad in ("garbage", "2023-13-99T99:99", 42, 3.14, [], {}, object()):
+        assert parse_finalized_at(bad) == ("auto", None)
+
+
 def test_sanitize_id_keeps_valid():
     assert sanitize_id("D22") == "D22"
     assert sanitize_id("10-asteroids") == "10-asteroids"
@@ -87,7 +118,7 @@ def test_access_lists_expected_endpoints():
     acc = make_access()
     types = {e["type"] for e in acc["endpoints"]}
     assert types == {
-        "contests", "state", "groups", "organizations", "teams", "persons",
+        "contest", "state", "groups", "organizations", "teams", "persons",
         "problems", "languages", "judgement-types", "submissions",
         "judgements", "runs", "scoreboard", "event-feed",
     }

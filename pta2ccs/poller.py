@@ -37,14 +37,26 @@ def _now() -> dt.datetime:
 
 
 def _rel_to_ms(rel) -> int | None:
-    """Snapshot time_limit reltime ("0:00:01.000") → ms for the
-    non-config raw_problems rebuild (translate expects milliseconds)."""
+    """Snapshot time_limit → ms for the non-config raw_problems rebuild
+    (translate expects milliseconds). The snapshot value is Contest API
+    seconds (number) since the spec-alignment change; a manual override
+    may still be a reltime string — accept both."""
     if rel in (None, ""):
         return None
+    if isinstance(rel, (int, float)) and not isinstance(rel, bool):
+        return round(float(rel) * 1000)
     try:
         return round(parse_reltime(str(rel)).total_seconds() * 1000)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, IndexError):
         return None
+
+
+def _mib_to_kb(mem) -> int | None:
+    """Snapshot memory_limit (Contest API MiB) → KB for the rebuild
+    (translate re-derives MiB via `// 1024`)."""
+    if isinstance(mem, (int, float)) and not isinstance(mem, bool):
+        return int(mem) * 1024
+    return None
 
 
 def drop_print_problem(raw_subs: list[dict], raw_problems: list[dict],
@@ -120,6 +132,11 @@ class Poller:
         # memory on rounds where nothing is re-fetched — otherwise
         # runs/files/sources would vanish from the rebuilt snapshot.
         self._detail_cache: dict[str, dict] = {}
+        # pending-verdict count at the last warning (None = condition not
+        # active). `_build_state` runs every round, so the "ended but
+        # pending" log would otherwise fire every few seconds; warn once
+        # on entry and again only when the count changes.
+        self._pending_warned: int | None = None
 
     def _set_rate_limit(self, retry_after: float) -> None:
         """Start a no-requests cooldown of `retry_after` seconds (task 14)."""
@@ -346,6 +363,22 @@ class Poller:
                     continue
                 self._count_print_attempt(sid)
 
+    def _warn_pending_verdicts(self, data) -> None:
+        """Log once when the contest has ended with unjudged submissions,
+        and again only when the pending count changes (surfaces unknown PTA
+        statuses that silently block auto-finalization without spamming a
+        line every poll)."""
+        pending = sum(1 for j in data.judgements.values()
+                      if not j.get("judgement_type_id"))
+        active = bool(data.state.get("ended")) \
+            and data.state.get("end_of_updates") is None and pending > 0
+        if active and pending != self._pending_warned:
+            log.warning("%d verdict(s) still pending; not finalizing",
+                        pending)
+            self._pending_warned = pending
+        elif not active:
+            self._pending_warned = None
+
     async def poll_once(self) -> None:
         now = time.monotonic()
         if self._rate_limit_until is not None and now < self._rate_limit_until:
@@ -407,10 +440,10 @@ class Poller:
                          "label": p.get("label"), "ordinal": p.get("ordinal"),
                          "color": p.get("color"), "rgb": p.get("rgb"),
                          # round-trip limits so they don't vanish between
-                         # config refreshes (time_limit is stored as a
-                         # reltime string; translate expects ms)
+                         # config refreshes (time_limit is stored as
+                         # Contest API seconds; memory_limit as MiB)
                          "time_limit_ms": _rel_to_ms(p.get("time_limit")),
-                         "memory_limit_kb": p.get("memory_limit"),
+                         "memory_limit_kb": _mib_to_kb(p.get("memory_limit")),
                          "code_limit_kb": p.get("code_limit"),
                          "test_data_count": p.get("test_data_count")}
                         for p in snap.problems.values()
@@ -424,6 +457,7 @@ class Poller:
             data = translate(self.contest_id, self.manual,
                              raw_subs, raw_problems, raw_teams, _now(),
                              meta=self._last_meta)
+            self._warn_pending_verdicts(data)
             self.store.apply_all(data)
             self.status["ready"] = True
             self.status["cookie_ok"] = True

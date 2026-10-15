@@ -2,10 +2,19 @@ import datetime as dt
 import logging
 
 from pta2ccs.models import sanitize_id
+from pta2ccs.timefmt import to_iso_time
 from pta2ccs.translate import translate
 
 TZ = "+08:00"
 NOW = dt.datetime(2023, 5, 21, 10, 30, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+# MANUAL's 09:00 + 5:00:00 ends at 14:00; 15:00 is safely past it
+ENDED = dt.datetime(2023, 5, 21, 15, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+FROZEN_MANUAL = {"contest": {
+    "name": "省赛", "formal_name": "省赛正式赛",
+    "start_time": "2023-05-21T09:00:00+08:00", "duration": "5:00:00",
+    "penalty_time": "0:20:00", "scoreboard_freeze_duration": "1:00:00",
+    "pta_timezone": TZ,
+}}
 
 MANUAL = {
     "contest": {
@@ -448,9 +457,18 @@ def test_problem_limits_from_raw():
                 code_limit_kb=64)]
     data = translate("999", MANUAL, [], raw, None, NOW)
     p = data.problems["A"]
-    assert p["time_limit"] == "0:00:00.100"  # ms preserved via reltime
-    assert p["memory_limit"] == 256000
+    # Contest API 2026-01 units: time_limit = seconds (number),
+    # memory_limit = MiB, code_limit = KiB
+    assert p["time_limit"] == 0.1
+    assert isinstance(p["time_limit"], float)
+    assert p["memory_limit"] == 250  # 256000 KB // 1024
     assert p["code_limit"] == 64
+
+
+def test_problem_memory_limit_is_mib():
+    raw = [dict(RAW_PROBLEMS[0], memory_limit_kb=262144)]
+    data = translate("999", MANUAL, [], raw, None, NOW)
+    assert data.problems["A"]["memory_limit"] == 256  # 256 MiB
 
 
 def test_problem_limits_absent_when_raw_lacks_them():
@@ -489,6 +507,186 @@ def test_manual_problem_test_data_count_wins_over_raw():
     raw = [dict(RAW_PROBLEMS[0], test_data_count=3)]
     data = translate("999", manual, [], raw, None, NOW)
     assert data.problems["A"]["test_data_count"] == 9
+
+
+# --- state finalization (Contest API 2026-01), task 22 ---------------------
+
+def ok_sub(sid: str = "1", status: str = "答案正确") -> dict:
+    return {"id": sid, "submit_time": "2023/05/21 09:10:00", "status": status,
+            "team_id": "D22", "team_name": "队", "problem_index": "A",
+            "language": "cpp"}
+
+
+def test_auto_finalize_ended_all_judged_strict_order():
+    data = translate("999", FROZEN_MANUAL, [ok_sub()], RAW_PROBLEMS, None, ENDED)
+    st = data.state
+    assert st["ended"] == "2023-05-21T14:00:00+08:00"
+    assert st["frozen"] == "2023-05-21T13:00:00+08:00"
+    base = to_iso_time(ENDED - dt.timedelta(seconds=1))
+    assert st["thawed"] == base
+    assert st["finalized"] == base
+    assert st["end_of_updates"] == to_iso_time(ENDED)
+    assert st["ended"] < st["thawed"] < st["end_of_updates"]
+    assert st["ended"] < st["finalized"] < st["end_of_updates"]
+    assert st["started"] < st["frozen"] < st["ended"]
+
+
+def test_no_auto_finalize_with_pending_verdict():
+    rows = [ok_sub("1"), ok_sub("2", "正在评测")]
+    data = translate("999", FROZEN_MANUAL, rows, RAW_PROBLEMS, None, ENDED)
+    st = data.state
+    assert st["thawed"] is None and st["finalized"] is None
+    assert st["end_of_updates"] is None
+
+
+def test_auto_finalize_boundary_is_strict():
+    # now == end + 1s → base == end, which would break ended < finalized
+    end = dt.datetime(2023, 5, 21, 14, 0, 0,
+                      tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    data = translate("999", FROZEN_MANUAL, [ok_sub()], RAW_PROBLEMS, None,
+                     end + dt.timedelta(seconds=1))
+    assert data.state["finalized"] is None
+    assert data.state["end_of_updates"] is None
+
+
+def test_auto_finalize_just_past_boundary_is_strict():
+    end = dt.datetime(2023, 5, 21, 14, 0, 0,
+                      tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    # emitted TIME values are whole-second, so base = now - 1s must be a
+    # full second past `ended` for the strict inequalities to survive
+    now = end + dt.timedelta(seconds=2)
+    data = translate("999", FROZEN_MANUAL, [ok_sub()], RAW_PROBLEMS, None, now)
+    st = data.state
+    assert st["ended"] < st["thawed"] < st["end_of_updates"]
+    assert st["ended"] < st["finalized"] < st["end_of_updates"]
+
+
+def test_auto_finalize_offset_independent():
+    # production shape: poller `now` is UTC-aware, contest starts at +08:00
+    utc = dt.timezone.utc
+    plus8 = dt.timezone(dt.timedelta(hours=8))
+    now = dt.datetime(2023, 5, 21, 15, 0, 0, tzinfo=plus8).astimezone(utc)
+    data = translate("999", FROZEN_MANUAL, [ok_sub()], RAW_PROBLEMS, None, now)
+    st = data.state
+    assert st["finalized"] is not None and st["end_of_updates"] is not None
+    # plain string compare: emitted in the contest offset, strictly ordered
+    assert st["ended"] < st["thawed"] < st["end_of_updates"]
+    assert st["ended"] < st["finalized"] < st["end_of_updates"]
+
+
+def test_auto_finalize_offset_boundary_strict():
+    utc = dt.timezone.utc
+    plus8 = dt.timezone(dt.timedelta(hours=8))
+    # now == end + 1s expressed in UTC must NOT finalize (base == end)
+    now = dt.datetime(2023, 5, 21, 14, 0, 1, tzinfo=plus8).astimezone(utc)
+    assert translate("999", FROZEN_MANUAL, [ok_sub()], RAW_PROBLEMS,
+                     None, now).state["finalized"] is None
+    # one second later fires, strict at second precision
+    data = translate("999", FROZEN_MANUAL, [ok_sub()], RAW_PROBLEMS, None,
+                     now + dt.timedelta(seconds=1))
+    st = data.state
+    assert st["ended"] < st["thawed"] < st["end_of_updates"]
+    assert st["ended"] < st["finalized"] < st["end_of_updates"]
+
+
+def test_auto_finalize_negative_offset_never_fires_before_end():
+    utc = dt.timezone.utc
+    minus5 = dt.timezone(dt.timedelta(hours=-5))
+    manual = {"contest": {
+        "start_time": "2023-05-21T09:00:00-05:00", "duration": "5:00:00",
+        "penalty_time": "0:20:00", "scoreboard_freeze_duration": "1:00:00",
+        "pta_timezone": "-05:00"}}
+    # 1h before ended (19:00 UTC), in UTC (the poller shape): must NOT fire
+    now = dt.datetime(2023, 5, 21, 13, 0, 0, tzinfo=minus5).astimezone(utc)
+    data = translate("999", manual, [ok_sub()], RAW_PROBLEMS, None, now)
+    assert data.state["finalized"] is None
+    assert data.state["end_of_updates"] is None
+    # past ended it fires with strictly ordered, comparable strings
+    after = dt.datetime(2023, 5, 21, 16, 0, 0, tzinfo=minus5).astimezone(utc)
+    st = translate("999", manual, [ok_sub()], RAW_PROBLEMS, None, after).state
+    assert st["ended"] < st["thawed"] < st["end_of_updates"]
+    assert st["ended"] < st["finalized"] < st["end_of_updates"]
+
+
+def test_explicit_finalized_at_utc_input_emits_ordered_strings():
+    # a UTC "Z" finalized_at against a +08:00 contest must still emit
+    # strictly increasing strings (normalized to the contest offset)
+    manual = {"contest": dict(FROZEN_MANUAL["contest"],
+                              finalized_at="2023-05-21T06:00:30Z")}
+    st = translate("999", manual, [ok_sub()], RAW_PROBLEMS, None, ENDED).state
+    assert st["finalized"] == "2023-05-21T14:00:30+08:00"
+    assert st["ended"] < st["finalized"] < st["end_of_updates"]
+    assert st["ended"] < st["thawed"] < st["end_of_updates"]
+
+
+def test_finalized_at_never_never_finalizes():
+    manual = {"contest": dict(FROZEN_MANUAL["contest"], finalized_at="never")}
+    data = translate("999", manual, [ok_sub()], RAW_PROBLEMS, None, ENDED)
+    assert data.state["finalized"] is None
+    assert data.state["end_of_updates"] is None
+    assert data.state["thawed"] is None
+
+
+def test_finalized_at_explicit_iso_sets_value():
+    manual = {"contest": dict(FROZEN_MANUAL["contest"],
+                              finalized_at="2023-05-21T14:00:30+08:00")}
+    data = translate("999", manual, [ok_sub()], RAW_PROBLEMS, None, ENDED)
+    t = dt.datetime(2023, 5, 21, 14, 0, 30,
+                    tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    assert data.state["finalized"] == to_iso_time(t)
+    assert data.state["thawed"] == to_iso_time(t)
+    assert data.state["end_of_updates"] == to_iso_time(t + dt.timedelta(seconds=1))
+
+
+def test_finalized_at_explicit_before_end_is_clamped():
+    manual = {"contest": dict(FROZEN_MANUAL["contest"],
+                              finalized_at="2023-05-21T10:00:00+08:00")}
+    data = translate("999", manual, [ok_sub()], RAW_PROBLEMS, None, ENDED)
+    # T = max(iso, ended + 1s); end = 14:00 → 14:00:01
+    assert data.state["finalized"] == "2023-05-21T14:00:01+08:00"
+    assert data.state["end_of_updates"] == "2023-05-21T14:00:02+08:00"
+
+
+def test_no_submissions_never_auto_finalizes():
+    data = translate("999", FROZEN_MANUAL, [], RAW_PROBLEMS, None, ENDED)
+    assert data.state["finalized"] is None
+    assert data.state["end_of_updates"] is None
+
+
+def test_thawed_omitted_without_freeze():
+    # MANUAL freeze is "0:00:00" → not frozen → no thawed, but auto
+    # finalization still happens (finalized/end_of_updates set)
+    data = translate("999", MANUAL, [ok_sub()], RAW_PROBLEMS, None, ENDED)
+    st = data.state
+    assert st["frozen"] is None
+    assert st["thawed"] is None
+    assert st["finalized"] == to_iso_time(ENDED - dt.timedelta(seconds=1))
+    assert st["end_of_updates"] == to_iso_time(ENDED)
+
+
+def test_not_ended_does_not_finalize():
+    data = translate("999", FROZEN_MANUAL, [ok_sub()], RAW_PROBLEMS, None, NOW)
+    assert data.state["ended"] is None
+    assert data.state["finalized"] is None
+    assert data.state["end_of_updates"] is None
+
+
+def test_garbage_finalized_at_falls_back_to_auto(caplog):
+    manual = {"contest": dict(FROZEN_MANUAL["contest"],
+                              finalized_at="not-a-time")}
+    with caplog.at_level(logging.WARNING):
+        data = translate("999", manual, [ok_sub()], RAW_PROBLEMS, None, ENDED)
+    # behaves as auto (finalized) but warns that the value was unusable
+    assert data.state["finalized"] == to_iso_time(ENDED - dt.timedelta(seconds=1))
+    assert any("finalized_at" in r.getMessage() for r in caplog.records)
+
+
+def test_non_str_finalized_at_warns_and_falls_back(caplog):
+    manual = {"contest": dict(FROZEN_MANUAL["contest"], finalized_at=42)}
+    with caplog.at_level(logging.WARNING):
+        data = translate("999", manual, [ok_sub()], RAW_PROBLEMS, None, ENDED)
+    assert data.state["finalized"] == to_iso_time(ENDED - dt.timedelta(seconds=1))
+    assert any("finalized_at" in r.getMessage() for r in caplog.records)
 
 
 # --- per-submission detail: runs / files / sources, task 13 ---------------

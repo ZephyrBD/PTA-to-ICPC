@@ -5,7 +5,7 @@
 用法：
 1. `python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"`
 2. 复制 `config.example.json` 为 `config.json`（**可选**，仅服务参数：host/port/轮询/限流，缺省即默认值）；复制 `manual.example/` 为 `manual/` 并按需编辑。cookie 与 contest_id 不在 `config.json` 里，由 setup GUI 写入 `manual/setup-connection.json`（已 gitignore）
-3. **首次运行**：`.venv/Scripts/python -m pta2ccs.setup` —— 一次性 GUI。首次启动弹出**比赛连接**对话框（填 contest_id + PTA cookie，预填 `config.json` 里残留的旧值；可选填**打印服务器 URL**；之后可随时用顶栏「🔗 比赛连接…」按钮重新打开），然后从 PTA 拉取题目和队伍，设置每题颜色与自定义队伍分组，题目侧栏用**打印题**单选面板标一题（其数据不进 CDS），队伍侧栏填**座位号 / 队员 / 教练**，写出 `manual/setup-*.json` 后退出。可重复运行（再次运行会预填上次的选择，分组 id 稳定复用）
+3. **首次运行**：`.venv/Scripts/python -m pta2ccs.setup` —— 一次性 GUI。首次启动弹出**比赛连接**对话框（填 contest_id + PTA cookie，预填 `config.json` 里残留的旧值；可选填**打印服务器 URL**；之后可随时用顶栏「🔗 比赛连接…」按钮重新打开），然后从 PTA 拉取题目和队伍，设置每题颜色与自定义队伍分组（**比赛设置** tab 可覆盖开赛时间 / 时长 / 封榜时长 / 定稿规则），题目侧栏用**打印题**单选面板标一题（其数据不进 CDS），队伍侧栏填**座位号 / 队员 / 教练**，写出 `manual/setup-*.json` 后退出。可重复运行（再次运行会预填上次的选择，分组 id 稳定复用）
 4. 在 `pta2ccs/` 目录下 `.venv/Scripts/python -m pta2ccs`（连接读自 `manual/setup-connection.json`，缺失时打印错误并退出；从 `config.json` 构建 app 并启动 uvicorn；没有模块级 `app`，不能用 `uvicorn pta2ccs.app:app`）
 5. `GET http://127.0.0.1:8000/api/v4/` → api info；`GET /healthz` → 就绪状态。旧路径 `/` 与 `/contests/...` 一律 301 重定向到 `/api/v4/...`（见下）
 
@@ -18,9 +18,17 @@
 - 全部可用编译器 → `/languages`（38 种，随 PTA 配置变化）
 - 题目列表、全量选手花名册 → `/teams`；PTA 用户组只映射到 `/organizations`（学校），**不再**生成 `/groups`
 
-事件流 `GET /api/v4/contests/{id}/event-feed`（NDJSON）：对象从快照中消失时按规范发出删除事件（`data: null`）。
+事件流 `GET /api/v4/contests/{id}/event-feed`（NDJSON）：对象从快照中消失时按规范发出删除事件（`data: null`）。`token` 为字符串；`?since_token=` 接收字符串。比赛**定稿**后（见下 `finalized_at`）`/state` 的 `end_of_updates` 落定，此后丢弃一切更新（快照冻结），事件流以 EOF 结束（CDS 正常退出，而非超时）。
 
 `manual/*.json`（模板见 `manual.example/`）仅用于**覆盖**，优先级：**manual 显式配置 > PTA API > 内置默认**。改完重启生效。典型用途：改比赛罚时、把用户组/队伍名改成中文显示名。
+
+### 比赛设置（`setup-contest.json`）
+
+`manual/setup-contest.json`（`{"contest": {...}}`，由 setup GUI **比赛设置** tab 写出）覆盖 PTA 推导的比赛参数：`start_time`（ISO-8601，需带时区偏移）、`duration` / `scoreboard_freeze_duration`（`时:分:秒`），以及 `finalized_at` 定稿规则：
+
+- 省略 / `""` / `"auto"`（默认）→ **自动定稿**：比赛已结束、**至少有一条提交且全部提交均已判定**，且以轮询当前时刻 `now` 派生的 `base = now - 1s`（秒精度）**严格晚于**结束时间时定稿：`finalized` = `thawed` = `base`（`thawed` 仅在封榜时写）、`end_of_updates` = `now`，保证 `结束 < finalized/thawed < end_of_updates` 严格成立。**零提交永不自动定稿**（需要时用显式时间）。已结束但仍有未判定提交则不定稿，并由轮询器**去重**打 warning（进入条件时打一次，待判数变化时再打）。
+- `"never"` → 永不自动定稿（`/state.finalized` 与 `end_of_updates` 为 null）。
+- ISO-8601 时间 → 显式定稿：`T = max(该时间, 结束 + 1s)`，`end_of_updates = T + 1s`。
 
 ### 题目颜色 / 队伍分组 / 打印题（`setup` GUI 写出）
 
@@ -48,7 +56,7 @@
 
 ### 统一 `/api/v4/` 布局（DOMjudge 超集 + Contest API 其余集合）
 
-全部接口统一挂在 `/api/v4/` 前缀下。共享路径（contests/teams/organizations）返回 **DOMjudge v4 形状的超集**（xcpctools 等 DOMjudge 消费者可直接用；Contest API 消费者容忍未知字段）；其余集合（state/scoreboard/groups/persons/problems/languages/judgement-types/submissions/judgements/runs/event-feed…）保持 **Contest API 2026-01 形状**。
+全部接口统一挂在 `/api/v4/` 前缀下。共享路径（contests/teams/organizations）返回 **DOMjudge v4 形状的超集**（xcpctools 等 DOMjudge 消费者可直接用；Contest API 消费者容忍未知字段）；其余集合（state/scoreboard/groups/persons/problems/languages/judgement-types/submissions/judgements/runs/event-feed…）保持 **Contest API 2026-01 形状**。事件与 access 的 contest 类型为单数 `contest`；`/problems[].time_limit` 为**秒**（number，可含小数）、`memory_limit` 为 **MiB**、`code_limit` 为 KiB。
 
 - `GET /api/v4/` —— api info。
 - `GET /api/v4/contests` —— 比赛列表（DOMjudge contest 对象，`shortname = name`；快照未就绪返回 `[]`）。

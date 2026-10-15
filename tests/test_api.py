@@ -59,6 +59,7 @@ def test_access():
     assert "submissions" in types
     assert "scoreboard" in types
     assert "runs" in types
+    assert "contest" in types and "contests" not in types
     by_type = {e["type"]: e["properties"] for e in body["endpoints"]}
     assert "files" in by_type["submissions"]
     assert {"max_run_time", "score"} <= set(by_type["judgements"])

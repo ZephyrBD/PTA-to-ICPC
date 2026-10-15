@@ -33,7 +33,7 @@ pta2ccs 增加 DOMjudge v4 兼容表面，供气球发放前端（DOMjudge 风�
 - `build_contestproblem(data, problem_id) -> dict`
   DOMjudge 问题对象，字段严格：
   `{"id", "label", "name", "short_name" (=label), "rgb", "color",
-   "time_limit" (整数**毫秒**，由 `parse_reltime(problem["time_limit"])` 换算，缺省 None→null),
+   "time_limit" (数值**秒**，取自快照 `time_limit`；旧版 reltime 字符串仍兼容换算，缺省 None→null),
    "statement": [], "attachments": []}`。
   problem 不存在时返回 None（调用方处理）。
 
@@ -102,7 +102,7 @@ pta2ccs 增加 DOMjudge v4 兼容表面，供气球发放前端（DOMjudge 风�
 
 - `tests/test_balloons.py`（新）：
   - 推导：每 (team, problem) 首次 AC；同一队多题各自一个；时间排序正确；pending/非 AC 不算。
-  - `build_contestproblem`：ms 换算、short_name=label、statement/attachments 空。
+  - `build_contestproblem`：time_limit 秒（数值）、short_name=label、statement/attachments 空。
   - `build_balloon`：team="id: 队名"、location=座位号、category/affiliation 解析、total 按 label 排序、缺 label/org/group → null。
   - `build_domjudge_contest`：字段齐、shortname=name、end_time、thaw null、banner/problemset 空。
   - `BalloonState`：sync 幂等（重复 sync 不写盘/不重号）、补号按时间序、剪除、done/undone 持久化（重新 new BalloonState 读回）、坏/缺文件不抛、404 未知 id。

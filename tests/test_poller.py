@@ -82,8 +82,12 @@ def make_poller(config_poll_seconds: float = 0.01, *,
                         **settings_overrides)
     client = FakeClient()
     store = Store()
+    # finalized_at "never": these tests model a still-updating contest
+    # (the real clock is far past the fixture's 2023 window); without it
+    # the new auto-finalization would freeze the snapshot after round 1
     manual = {"contest": {"start_time": "2023-05-21T09:00:00+08:00",
-                          "duration": "31:00:00", "pta_timezone": "+08:00"}}
+                          "duration": "31:00:00", "pta_timezone": "+08:00",
+                          "finalized_at": "never"}}
     extra: dict = {}
     if print_server is not None:
         extra["print_server"] = print_server
@@ -346,22 +350,23 @@ def test_config_round_rate_limit_also_backs_off():
 def test_non_config_rounds_keep_problem_limits():
     # config_poll_seconds=60 → only the first round is need_config; the
     # snapshot-rebuilt raw_problems on later rounds must carry the limits
-    # through (time_limit round-trips reltime → ms).
+    # through (time_limit stays seconds, memory_limit stays MiB — the
+    # Contest API 2026-01 units).
     poller, client, store = make_poller(config_poll_seconds=60.0)
     client.problems = [{"id": "A", "title": "题A", "time_limit_ms": 100,
                         "memory_limit_kb": 256000, "code_limit_kb": 64,
                         "test_data_count": 3}]
     asyncio.run(poller.poll_once())
     snap = store.snapshot()
-    assert snap.problems["A"]["time_limit"] == "0:00:00.100"
-    assert snap.problems["A"]["memory_limit"] == 256000
+    assert snap.problems["A"]["time_limit"] == 0.1
+    assert snap.problems["A"]["memory_limit"] == 250
     assert snap.problems["A"]["code_limit"] == 64
     assert snap.problems["A"]["test_data_count"] == 3
     for _ in range(2):  # non-config rounds rebuild from the snapshot
         asyncio.run(poller.poll_once())
     snap = store.snapshot()
-    assert snap.problems["A"]["time_limit"] == "0:00:00.100"
-    assert snap.problems["A"]["memory_limit"] == 256000
+    assert snap.problems["A"]["time_limit"] == 0.1
+    assert snap.problems["A"]["memory_limit"] == 250
     assert snap.problems["A"]["code_limit"] == 64
     assert snap.problems["A"]["test_data_count"] == 3
 
@@ -701,3 +706,49 @@ def test_print_source_fetch_429_cooldown_without_attempt_burn(tmp_path):
     asyncio.run(poller.poll_once())
     assert len(requests) == 1
     assert poller._print_sent == {"1"}
+
+
+# --- pending-verdict warning dedupe (task 22 review) ----------------------
+
+class _FakeData:
+    def __init__(self, pending: int, *, ended=True, eou=None):
+        self.state = {"ended": "2023-05-21T20:00:00+08:00" if ended else None,
+                      "end_of_updates": eou}
+        self.judgements = {str(i): {"judgement_type_id": None}
+                           for i in range(pending)}
+
+
+def test_pending_verdict_warning_deduped(caplog):
+    poller, _, _ = make_poller()
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+        for _ in range(3):
+            poller._warn_pending_verdicts(_FakeData(2))
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warns) == 1                      # N polls, unchanged count
+
+
+def test_pending_verdict_warning_relogs_on_count_change(caplog):
+    poller, _, _ = make_poller()
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+        poller._warn_pending_verdicts(_FakeData(2))
+        poller._warn_pending_verdicts(_FakeData(2))
+        poller._warn_pending_verdicts(_FakeData(3))
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warns) == 2
+
+
+def test_pending_verdict_warning_resets_when_clear(caplog):
+    poller, _, _ = make_poller()
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+        poller._warn_pending_verdicts(_FakeData(2))          # logs
+        poller._warn_pending_verdicts(_FakeData(0))          # clears
+        poller._warn_pending_verdicts(_FakeData(2))          # logs again
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warns) == 2
+
+
+def test_pending_verdict_no_warning_after_finalized(caplog):
+    poller, _, _ = make_poller()
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+        poller._warn_pending_verdicts(_FakeData(2, eou="2023-05-21T20:00:01+08:00"))
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []

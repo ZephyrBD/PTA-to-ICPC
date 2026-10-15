@@ -23,7 +23,7 @@ def make_api_info() -> dict:
 
 
 ACCESS_ENDPOINTS = [
-    {"type": "contests", "properties": [
+    {"type": "contest", "properties": [
         "id", "name", "formal_name", "start_time", "duration",
         "scoreboard_freeze_duration", "scoreboard_type", "penalty_time"]},
     {"type": "state", "properties": [

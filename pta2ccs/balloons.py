@@ -116,9 +116,9 @@ def build_domjudge_org(data: ContestData, org_id: str) -> dict:
 
 
 def build_contestproblem(data: ContestData, problem_id: str) -> dict | None:
-    """DOMjudge v4 contestproblem object; time_limit as integer
-    milliseconds from the stored reltime (parse_reltime; absent → None).
-    Returns None when the problem id does not resolve."""
+    """DOMjudge v4 contestproblem object; time_limit as a number of seconds
+    (spec) from the stored value (legacy reltime strings still accepted;
+    absent → None). Returns None when the problem id does not resolve."""
     problem = data.problems.get(problem_id)
     if problem is None:
         return None
@@ -126,10 +126,13 @@ def build_contestproblem(data: ContestData, problem_id: str) -> dict | None:
     time_limit = None
     rel = problem.get("time_limit")
     if rel not in (None, ""):
-        try:
-            time_limit = round(parse_reltime(str(rel)).total_seconds() * 1000)
-        except (ValueError, TypeError):
-            time_limit = None
+        if isinstance(rel, (int, float)) and not isinstance(rel, bool):
+            time_limit = rel
+        else:
+            try:
+                time_limit = round(parse_reltime(str(rel)).total_seconds(), 3)
+            except (ValueError, TypeError, IndexError):
+                time_limit = None
     return {
         "id": problem_id,
         "label": label,

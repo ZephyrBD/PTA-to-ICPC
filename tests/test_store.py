@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 
 from pta2ccs.store import Store
 from pta2ccs.translate import translate
@@ -112,6 +113,74 @@ def test_contest_and_state_updates_emit_no_delete():
     manual = {"contest": dict(MANUAL["contest"], name="改名")}
     events = store.apply_all(make([], now=NOW, manual=manual))
     changed = {e.type for e in events}
-    assert "contests" in changed
+    assert "contest" in changed
     assert "state" in changed
     assert [e for e in events if e.data is None] == []
+
+
+def test_state_event_is_last_in_batch():
+    store = Store()
+    before = dt.datetime(2023, 5, 21, 8, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    store.apply_all(make([base_sub("1")], now=before))
+    offset = len(store._events)
+    events = store.apply_all(make([base_sub("1"), base_sub("2")], now=NOW))
+    assert events[-1].type == "state"
+    # the wire order (Store._events / event_feed) must match the returned
+    # list — deferring only the list append is not enough, since _emit
+    # below already wrote the state event into _events ahead of the diffs
+    assert store._events[-1].type == "state"
+    assert [e.type for e in store._events[offset:]][-1] == "state"
+
+
+def test_event_token_serializes_as_string():
+    store = Store()
+    events = store.apply_all(make([base_sub("1")]))
+    assert all(isinstance(e.token, int) for e in events)
+    assert all(isinstance(e.to_json()["token"], str) for e in events)
+    assert events[0].to_json()["token"] == str(events[0].token)
+
+
+def test_finalized_snapshot_ignores_later_updates(caplog):
+    store = Store()
+    ended = dt.datetime(2023, 5, 21, 15, 0, 0,
+                        tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    store.apply_all(make([base_sub("1")], now=ended))
+    snap = store.snapshot()
+    assert snap.state["end_of_updates"] is not None
+    changed = {"contest": dict(MANUAL["contest"], name="改名")}
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.store"):
+        events = store.apply_all(make([base_sub("1")], now=ended,
+                                      manual=changed))
+    assert events == []
+    assert store.snapshot() is snap  # not replaced
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_finalized_snapshot_same_data_no_warning(caplog):
+    store = Store()
+    ended = dt.datetime(2023, 5, 21, 15, 0, 0,
+                        tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    store.apply_all(make([base_sub("1")], now=ended))
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.store"):
+        events = store.apply_all(make([base_sub("1")], now=ended))
+    assert events == []
+    assert caplog.records == []
+
+
+def test_finalized_snapshot_state_drift_does_not_warn(caplog):
+    # the auto rule re-derives state times from the advancing poll clock, so
+    # consecutive post-finalization polls differ in `state` alone; that must
+    # not be reported as a change to a finalized contest
+    store = Store()
+    ended = dt.datetime(2023, 5, 21, 15, 0, 0,
+                        tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    store.apply_all(make([base_sub("1")], now=ended))
+    snap = store.snapshot()
+    with caplog.at_level(logging.WARNING, logger="pta2ccs.store"):
+        e1 = store.apply_all(make([base_sub("1")],
+                                  now=ended + dt.timedelta(seconds=5)))
+        e2 = store.apply_all(make([base_sub("1")],
+                                  now=ended + dt.timedelta(seconds=10)))
+    assert e1 == [] and e2 == []
+    assert store.snapshot() is snap
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []

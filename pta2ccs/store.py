@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from .translate import ContestData
 
+log = logging.getLogger(__name__)
+
 EVENT_WINDOW = 10000
 
 _STATIC_FIELDS = (
-    ("contest", "contests"), ("state", "state"), ("groups", "groups"),
+    ("contest", "contest"), ("state", "state"), ("groups", "groups"),
     ("organizations", "organizations"), ("teams", "teams"),
     ("persons", "persons"),
     ("problems", "problems"), ("languages", "languages"),
@@ -26,7 +29,18 @@ class Event:
     token: int
 
     def to_json(self) -> dict:
-        return {"type": self.type, "id": self.id, "data": self.data, "token": self.token}
+        # spec: notification token is type string; Event.token stays int
+        return {"type": self.type, "id": self.id, "data": self.data,
+                "token": str(self.token)}
+
+
+def _same_ignoring_state(a: ContestData, b: ContestData) -> bool:
+    # ContestData is a dataclass with no custom __eq__; compare every field
+    # except `state` (frozen path: only a non-state change is a real
+    # divergence worth warning about).
+    return all(
+        getattr(a, name) == getattr(b, name)
+        for name in a.__dataclass_fields__ if name != "state")
 
 
 class Store:
@@ -64,13 +78,29 @@ class Store:
         return ev
 
     def apply_all(self, data: ContestData) -> list[Event]:
-        events: list[Event] = []
         old = self._data
+        # a finalized contest must not change (spec): once end_of_updates is
+        # in the snapshot, ignore every later poll and keep the snapshot.
+        # Only non-state fields count as a real divergence — the auto rule
+        # re-derives the state times from the advancing clock, so a repeat
+        # poll legitimately differs in `state` alone.
+        if old is not None and old.state.get("end_of_updates"):
+            if not _same_ignoring_state(old, data):
+                log.warning("ignoring update to a finalized contest")
+            return []
+        events: list[Event] = []
         deleted: list[tuple[str, str]] = []
+        state_changed = False
         for attr, type_ in _STATIC_FIELDS:
             new_map: dict = getattr(data, attr)
             old_map: dict = getattr(old, attr) if old else {}
-            if attr in ("contest", "state"):
+            if attr == "state":
+                # the state event (end_of_updates) must be the LAST line of
+                # the batch — never _emit it here (that would also order it
+                # in Store._events / the wire before the object diffs)
+                state_changed = old_map != new_map
+                continue
+            if attr == "contest":
                 if old_map != new_map:
                     events.append(self._emit(type_, None, new_map))
                 continue
@@ -93,5 +123,7 @@ class Store:
                         if sid not in data.judgements]
         for type_, k in deleted:
             events.append(self._emit(type_, k, None))
+        if state_changed:
+            events.append(self._emit("state", None, data.state))
         self._data = data
         return events
