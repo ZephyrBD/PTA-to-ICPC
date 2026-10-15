@@ -4,6 +4,7 @@ import datetime as dt
 from fastapi.testclient import TestClient
 
 from pta2ccs.app import _make_poller, create_app
+from pta2ccs.balloons import BalloonState
 from pta2ccs.config import Settings
 from pta2ccs.store import Store
 from pta2ccs.translate import translate
@@ -322,3 +323,109 @@ def test_access_advertises_persons_endpoint_with_properties():
     body = make_client().get("/contests/c1/access").json()
     by_type = {e["type"]: e["properties"] for e in body["endpoints"]}
     assert by_type["persons"] == ["id", "name", "role", "team_ids"]
+
+
+# --- DOMjudge v4 balloon surface (/api/v4/) ----------------------------------
+
+V4_MANUAL = {"contest": dict(MANUAL["contest"]),
+             "groups": {"1": {"name": "正式"}},
+             "teams": {"D22": {"group_ids": ["1"], "seat": "A12"},
+                       "D23": {"group_ids": ["1"], "seat": "B07"}}}
+V4_SUBS = [
+    {"id": "1", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
+     "team_id": "D22", "team_name": "一队", "problem_index": "A", "language": "cpp"},
+    {"id": "2", "submit_time": "2023/05/21 09:15:00", "status": "答案正确",
+     "team_id": "D22", "team_name": "一队", "problem_index": "B", "language": "cpp"},
+    {"id": "3", "submit_time": "2023/05/21 09:25:00", "status": "答案正确",
+     "team_id": "D23", "team_name": "二队", "problem_index": "A", "language": "cpp"},
+]
+V4_PROBLEMS = [{"id": "A", "title": "题A"}, {"id": "B", "title": "题B"}]
+
+
+def make_v4_client(tmp_path) -> TestClient:
+    store = Store()
+    store.apply_all(translate("c1", V4_MANUAL, V4_SUBS, V4_PROBLEMS, None, NOW))
+    app = create_app(store, poller=None, contest_id="c1",
+                     balloon_state=BalloonState(tmp_path / "balloons.json"))
+    return TestClient(app)
+
+
+def test_v4_contests_snap_none_returns_empty(tmp_path):
+    app = create_app(Store(), poller=None, contest_id="c1",
+                     balloon_state=BalloonState(tmp_path / "balloons.json"))
+    assert TestClient(app).get("/api/v4/contests").json() == []
+
+
+def test_v4_contests_shape(tmp_path):
+    body = make_v4_client(tmp_path).get("/api/v4/contests").json()
+    assert len(body) == 1
+    contest = body[0]
+    assert contest["id"] == "c1"
+    assert contest["shortname"] == contest["name"] == "省赛"
+    assert contest["banner"] == []
+    assert contest["problemset"] == []
+    assert contest["allow_submit"] is True
+
+
+def test_v4_balloons_order_todo_done_undone(tmp_path):
+    c = make_v4_client(tmp_path)
+    body = c.get("/api/v4/contests/c1/balloons").json()
+    # undone-first, each group first-AC time DESC: D23-A(09:25), D22-B(09:15), D22-A(09:10)
+    assert [b["balloonid"] for b in body] == [3, 2, 1]
+    assert body[0]["team"] == "D23: 二队"
+    assert body[0]["problem"] == "A"
+    assert body[0]["location"] == "B07"
+    assert body[0]["category"] == "正式"
+    assert body[0]["total"]["A"]["short_name"] == "A"
+    assert all(b["done"] is False for b in body)
+    # mark D22-A (balloonid 1) done → moves to the done group
+    assert c.post("/api/v4/contests/c1/balloons/1/done").status_code == 204
+    body = c.get("/api/v4/contests/c1/balloons").json()
+    assert [b["balloonid"] for b in body] == [3, 2, 1]
+    assert [b["done"] for b in body] == [False, False, True]
+    # todo=true hides the done balloon
+    body = c.get("/api/v4/contests/c1/balloons?todo=true").json()
+    assert [b["balloonid"] for b in body] == [3, 2]
+    # undone returns it to the pending pool
+    assert c.post("/api/v4/contests/c1/balloons/1/undone").status_code == 204
+    body = c.get("/api/v4/contests/c1/balloons?todo=true").json()
+    assert [b["balloonid"] for b in body] == [3, 2, 1]
+
+
+def test_v4_balloons_404_unknown_id_and_cid(tmp_path):
+    c = make_v4_client(tmp_path)
+    r = c.post("/api/v4/contests/c1/balloons/999/done")
+    assert r.status_code == 404
+    assert r.json() == {"code": 404, "message": "balloon not found: 999"}
+    assert c.post("/api/v4/contests/c1/balloons/999/undone").status_code == 404
+    r = c.get("/api/v4/contests/nope/balloons")
+    assert r.status_code == 404
+    assert r.json()["code"] == 404
+    assert c.post("/api/v4/contests/nope/balloons/1/done").status_code == 404
+
+
+def test_v4_balloons_empty_store_404(tmp_path):
+    app = create_app(Store(), poller=None, contest_id="c1",
+                     balloon_state=BalloonState(tmp_path / "balloons.json"))
+    r = TestClient(app).get("/api/v4/contests/c1/balloons")
+    assert r.status_code == 404
+    assert r.json() == {"code": 404, "message": "contest data not ready"}
+
+
+def test_v4_balloons_tied_times_stable_order(tmp_path):
+    """Equal first-AC times keep mint order (balloonid ascending) inside
+    an ordering group — DOMjudge's submittime DESC then stable done sort
+    must not reorder equal-time rows."""
+    store = Store()
+    subs = [
+        {"id": "1", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
+         "team_id": "D22", "team_name": "一队", "problem_index": "A", "language": "cpp"},
+        {"id": "2", "submit_time": "2023/05/21 09:10:00", "status": "答案正确",
+         "team_id": "D22", "team_name": "一队", "problem_index": "B", "language": "cpp"},
+    ]
+    store.apply_all(translate("c1", V4_MANUAL, subs, V4_PROBLEMS, None, NOW))
+    c = TestClient(create_app(store, poller=None, contest_id="c1",
+                              balloon_state=BalloonState(tmp_path / "b.json")))
+    body = c.get("/api/v4/contests/c1/balloons").json()
+    assert [b["balloonid"] for b in body] == [1, 2]
+    assert [b["problem"] for b in body] == ["A", "B"]

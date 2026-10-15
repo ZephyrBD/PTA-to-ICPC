@@ -7,5 +7,7 @@ __pycache__/
 config.json
 manual/
 print_sent.json
+balloons.json
+balloons.json.tmp
 dist/
 *.egg-info/

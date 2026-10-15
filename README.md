@@ -46,4 +46,14 @@
 
 编译器枚举与显示名统一映射到 Contest API 2026-01 标准语言 id（`GXX`/`CLANGXX` → `cpp`、`JAVAC` → `java`、`PYTHON3` → `python3` …），并带 known-languages 附录的 `extensions` 表；未知值经 `sanitize_id` 原样保留。提交的 `language_id` 同步用标准 id。
 
-设计文档：`../docs/superpowers/specs/2026-10-13-pta2ccs-design.md`、`../docs/superpowers/specs/2026-10-15-print-domjudge-design.md`
+### 气球发放端点（`/api/v4/`，DOMjudge v4 兼容）
+
+面向 DOMjudge 风格的气球发放前端，挂在 `/api/v4/` 前缀（与 Contest API 表面完全隔离）：
+
+- `GET /api/v4/contests` —— 比赛列表（DOMjudge contest 对象，`shortname = name`；快照未就绪返回 `[]`）。
+- `GET /api/v4/contests/{cid}/balloons?todo=` —— 气球列表：每 (队伍, 题目) **首次 AC** 一个气球；`todo=true` 只返回未发放。排序：未发放在前、已发放在后，各组内按首次 AC 时间倒序。
+- `POST /api/v4/contests/{cid}/balloons/{balloonId}/done` / `/undone` —— 标记已发 / 未发，成功 204，未知 id 404。
+
+`done` 状态持久化在 `balloons.json`（cwd 相对路径，gitignore；形状 `{"next_id": int, "entries": {balloonid: {"team_id", "problem_id", "done"}}}`）。每次请求按快照实时重算首次 AC：新气球按提交时间补号、不再是首次 AC 的剪除、重启不丢 `done`；缺失 / 损坏文件从空状态开始（warning，不抛）。
+
+设计文档：`../docs/superpowers/specs/2026-10-13-pta2ccs-design.md`、`../docs/superpowers/specs/2026-10-15-print-domjudge-design.md`、`../docs/superpowers/specs/2026-10-15-domjudge-balloons-design.md`

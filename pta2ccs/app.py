@@ -7,8 +7,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
+from .balloons import (BalloonState, build_balloon, build_contestproblem,
+                       build_domjudge_contest, first_ac_pairs, time_sort_key)
 from .config import Settings, load_connection, load_manual, load_settings
 from .models import error_body, make_access, make_api_info
 from .poller import Poller
@@ -43,7 +45,10 @@ def _now_local(tz_str: str = "+08:00") -> dt.datetime:
 
 
 def create_app(store: Store, poller: Poller | None, contest_id: str,
-               tz: str = "+08:00") -> FastAPI:
+               tz: str = "+08:00",
+               balloon_state: BalloonState | None = None) -> FastAPI:
+    if balloon_state is None:
+        balloon_state = BalloonState()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -144,6 +149,64 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
         if program is None:
             raise HTTPException(404, error_body(404, f"file not found: {filename}"))
         return PlainTextResponse(program, media_type="text/plain; charset=utf-8")
+
+    # DOMjudge v4 balloon surface (/api/v4/): confined to the /api/v4/
+    # prefix so the Contest API surface stays untouched, and registered
+    # before the {collection} catch-all (like event_feed). GET balloons
+    # reconciles BalloonState against the fresh snapshot on every request.
+    @app.get("/api/v4/contests")
+    async def v4_contests():
+        snap = store.snapshot()
+        if snap is None:
+            return []
+        return [build_domjudge_contest(snap)]
+
+    @app.get("/api/v4/contests/{cid}/balloons")
+    async def v4_balloons(cid: str, todo: bool = False):
+        require_cid(cid)
+        snap = require_snap()
+        await balloon_state.sync(snap)
+        pairs = first_ac_pairs(snap)
+        total_map: dict[str, dict] = {}
+        for team_id, problem_id in pairs:
+            cp = build_contestproblem(snap, problem_id)
+            if cp is None:
+                continue
+            total_map.setdefault(team_id, {})[cp["label"]] = cp
+        rows = []
+        for bid, entry in (await balloon_state.snapshot_entries()).items():
+            team_id = entry["team_id"]
+            problem_id = entry["problem_id"]
+            if team_id not in snap.teams or problem_id not in snap.problems:
+                continue  # defensive: team/problem no longer resolve
+            info = pairs.get((team_id, problem_id))
+            if info is None:
+                continue  # pruned by sync above; should not happen
+            rows.append(build_balloon(
+                snap, dict(entry, time=info["time"]), bid,
+                entry["done"], total_map))
+        # undone first, then done; within each group first-AC time DESC
+        rows.sort(key=lambda r: time_sort_key(r["time"]), reverse=True)
+        rows.sort(key=lambda r: r["done"])
+        if todo:
+            rows = [r for r in rows if not r["done"]]
+        return rows
+
+    @app.post("/api/v4/contests/{cid}/balloons/{balloonId}/done")
+    async def v4_balloon_done(cid: str, balloonId: int):
+        require_cid(cid)
+        if not await balloon_state.set_done(balloonId, True):
+            raise HTTPException(404, error_body(
+                404, f"balloon not found: {balloonId}"))
+        return Response(status_code=204)
+
+    @app.post("/api/v4/contests/{cid}/balloons/{balloonId}/undone")
+    async def v4_balloon_undone(cid: str, balloonId: int):
+        require_cid(cid)
+        if not await balloon_state.set_done(balloonId, False):
+            raise HTTPException(404, error_body(
+                404, f"balloon not found: {balloonId}"))
+        return Response(status_code=204)
 
     @app.get("/contests/{cid}/{collection}")
     async def collection(cid: str, collection: str, request: Request):
