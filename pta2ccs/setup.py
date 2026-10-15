@@ -6,8 +6,8 @@ and teams once from PTA, opens the GUI, writes the operator's choices into
 The server process never imports tkinter.
 
 Pure, testable logic lives at module level; all tkinter usage is confined to
-``launch_gui()`` (tkinter imported lazily) so importing this module is
-headless-safe.
+``launch_gui()`` / ``launch_connection_dialog()`` (tkinter imported lazily)
+so importing this module is headless-safe.
 
 Data semantics (see README / docs):
 - PTA userGroups feed ONLY ``organization_id`` + ``organizations``.
@@ -21,16 +21,16 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import sys
 from pathlib import Path
 
-from .config import Settings, load_settings
+from .config import Settings, load_connection, load_settings
 from .pta.client import PtaAuthError, PtaClient
 from .translate import PALETTE
 
 SETUP_PROBLEMS_FILE = "setup-problems.json"
 SETUP_GROUPS_FILE = "setup-groups.json"
 SETUP_TEAMS_FILE = "setup-teams.json"
+SETUP_CONNECTION_FILE = "setup-connection.json"
 
 _GROUP_ID_RE = re.compile(r"g(\d+)\Z")
 
@@ -94,12 +94,13 @@ def sort_team_rows(rows, key, reverse=False) -> list[dict]:
                   reverse=reverse)
 
 
-def build_problem_rows(problems, saved_colors) -> list[dict]:
+def build_problem_rows(problems, saved_colors, print_problem=None) -> list[dict]:
     """One display row per problem, in ordinal order.
 
     Prefill color/rgb from ``saved_colors`` (label → {color, rgb}) when
     present, else the PALETTE default (same index rule as translate). A row
     carrying a saved value is marked ``changed`` so it is written back.
+    ``print_problem`` (label or None) prefills the single-select 打印题 flag.
     """
     rows: list[dict] = []
     for i, p in enumerate(problems or []):
@@ -113,9 +114,24 @@ def build_problem_rows(problems, saved_colors) -> list[dict]:
             "color": saved.get("color") or default_color,
             "rgb": saved.get("rgb") or default_rgb,
             "changed": bool(saved),
+            "print": print_problem is not None and label == str(print_problem),
         })
     rows.sort(key=lambda r: r["ordinal"])
     return rows
+
+
+def toggle_print_problem(problem_rows, idx) -> None:
+    """Single-select toggle for the 打印题 column (mutates in place).
+
+    Sets ``problem_rows[idx]["print"]`` to the opposite of its current
+    value and clears every other row, so at most one row is ever True.
+    An out-of-range ``idx`` (empty table) is a no-op.
+    """
+    if not 0 <= idx < len(problem_rows):
+        return
+    new_val = not problem_rows[idx]["print"]
+    for i, row in enumerate(problem_rows):
+        row["print"] = new_val and i == idx
 
 
 def build_team_rows(teams, groups, saved_assignments) -> list[dict]:
@@ -154,11 +170,14 @@ async def fetch_setup_data(client) -> tuple[list[dict], list[dict]]:
 def load_manual_setup(manual_dir) -> dict:
     """Read the three ``setup-*.json`` files if present.
 
-    Returns ``{"problems": {...}, "groups": {...}, "teams": {...}}`` with empty
-    dicts for missing/short files (a malformed JSON file is ignored — the
-    server's ``config.load_manual`` performs the strict validation).
+    Returns ``{"problems": {...}, "groups": {...}, "teams": {...},
+    "print_problem": str | None}`` with empty dicts / None for missing or
+    short files (a malformed JSON file is ignored — the server's
+    ``config.load_manual`` performs the strict validation). ``print_problem``
+    is the top-level sibling of ``"problems"`` in setup-problems.json.
     """
-    out = {"problems": {}, "groups": {}, "teams": {}}
+    out: dict = {"problems": {}, "groups": {}, "teams": {},
+                 "print_problem": None}
     manual_dir = Path(manual_dir)
     for key, fname in (("problems", SETUP_PROBLEMS_FILE),
                        ("groups", SETUP_GROUPS_FILE),
@@ -170,22 +189,33 @@ def load_manual_setup(manual_dir) -> dict:
             data = json.loads(f.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
-        section = data.get(key) if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            continue
+        section = data.get(key)
         if isinstance(section, dict):
             out[key] = section
+        if key == "problems":
+            pp = data.get("print_problem")
+            if isinstance(pp, str) and pp:
+                out["print_problem"] = pp
     return out
 
 
-def write_manual_setup(manual_dir, problems_colors, groups, assignments) -> None:
+def write_manual_setup(manual_dir, problems_colors, groups, assignments,
+                       print_problem=None) -> None:
     """Write the three setup files (UTF-8, no ASCII escaping, indent 2).
 
     ``assignments`` maps team_id → {group_ids: [...]}; the caller omits teams
-    with an empty assignment.
+    with an empty assignment. ``print_problem`` (label or None) is stored as
+    a top-level sibling of ``"problems"`` in setup-problems.json; None is
+    written explicitly as null ("no print problem" is meaningful after
+    switching contests).
     """
     manual_dir = Path(manual_dir)
     manual_dir.mkdir(parents=True, exist_ok=True)
     payloads = {
-        SETUP_PROBLEMS_FILE: {"problems": problems_colors},
+        SETUP_PROBLEMS_FILE: {"problems": problems_colors,
+                              "print_problem": print_problem},
         SETUP_GROUPS_FILE: {"groups": groups},
         SETUP_TEAMS_FILE: {"teams": assignments},
     }
@@ -194,19 +224,54 @@ def write_manual_setup(manual_dir, problems_colors, groups, assignments) -> None
         (manual_dir / fname).write_text(text, encoding="utf-8")
 
 
+def write_connection(manual_dir, conn: dict) -> None:
+    """Write ``manual_dir/setup-connection.json`` (UTF-8, indent 2)."""
+    manual_dir = Path(manual_dir)
+    manual_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"contest_id": conn["contest_id"],
+               "pta_cookie": conn["pta_cookie"]}
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    (manual_dir / SETUP_CONNECTION_FILE).write_text(text, encoding="utf-8")
+
+
+def _residual_config_prefill(config_path) -> dict | None:
+    """Legacy config.json → connection prefill (migration convenience).
+
+    Returns ``{"contest_id": ..., "pta_cookie": ...}`` when the file exists
+    and both fields are non-empty strings; otherwise None (missing file,
+    malformed JSON, or incomplete fields).
+    """
+    path = Path(config_path)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    contest_id = data.get("contest_id")
+    pta_cookie = data.get("pta_cookie")
+    if not isinstance(contest_id, str) or not contest_id:
+        return None
+    if not isinstance(pta_cookie, str) or not pta_cookie:
+        return None
+    return {"contest_id": contest_id, "pta_cookie": pta_cookie}
+
+
 # --------------------------------------------------------------------------- #
 # networking (shared by main() and the GUI refetch button)
 # --------------------------------------------------------------------------- #
 
-def _client(settings: Settings) -> PtaClient:
-    return PtaClient("https://pintia.cn", settings.contest_id,
-                     settings.pta_cookie,
-                     requests_per_second=settings.pta_requests_per_second)
+def _client(conn: dict, requests_per_second: float) -> PtaClient:
+    return PtaClient("https://pintia.cn", conn["contest_id"],
+                     conn["pta_cookie"],
+                     requests_per_second=requests_per_second)
 
 
-def _fetch_remote(settings: Settings) -> tuple[list[dict], list[dict]]:
+def _fetch_remote(conn: dict, requests_per_second: float) -> tuple[list[dict], list[dict]]:
     async def run():
-        client = _client(settings)
+        client = _client(conn, requests_per_second)
         try:
             return await fetch_setup_data(client)
         finally:
@@ -218,14 +283,86 @@ def _fetch_remote(settings: Settings) -> tuple[list[dict], list[dict]]:
 # GUI (tkinter imported lazily; never needed for tests)
 # --------------------------------------------------------------------------- #
 
-def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
+def launch_connection_dialog(parent, settings: Settings, manual_dir,
+                             prefill=None) -> dict | None:
+    """Modal dialog to enter/validate the PTA connection.
+
+    Two Entry fields (比赛 ID / PTA Cookie), prefilled from ``prefill``.
+    "连接并拉取" validates with one ``_fetch_remote`` round-trip (exercises
+    both cookie auth and contest id), then writes setup-connection.json and
+    returns the conn dict; "取消" / window close returns None. ``parent`` may
+    be None (standalone call from ``main()`` — a temporary root is created).
+    """
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+
+    temp_root = None
+    if parent is None:
+        temp_root = tk.Tk()
+        temp_root.withdraw()
+        parent = temp_root
+
+    dlg = tk.Toplevel(parent)
+    dlg.title("比赛连接")
+    dlg.geometry("300x160")
+    dlg.resizable(False, False)
+
+    result: dict = {"conn": None}
+
+    ttk.Label(dlg, text="比赛 ID").pack(anchor="w", padx=12, pady=(12, 0))
+    cid_entry = ttk.Entry(dlg, width=36)
+    cid_entry.pack(fill="x", padx=12)
+    ttk.Label(dlg, text="PTA Cookie").pack(anchor="w", padx=12, pady=(8, 0))
+    cookie_entry = ttk.Entry(dlg, width=36)
+    cookie_entry.pack(fill="x", padx=12)
+
+    prefill = prefill or {}
+    cid_entry.insert(0, str(prefill.get("contest_id") or ""))
+    cookie_entry.insert(0, str(prefill.get("pta_cookie") or ""))
+
+    def on_connect() -> None:
+        conn = {"contest_id": cid_entry.get().strip(),
+                "pta_cookie": cookie_entry.get().strip()}
+        if not conn["contest_id"] or not conn["pta_cookie"]:
+            messagebox.showwarning("比赛连接", "请填写比赛 ID 和 PTA Cookie",
+                                   parent=dlg)
+            return
+        try:
+            _fetch_remote(conn, settings.pta_requests_per_second)
+        except PtaAuthError:
+            messagebox.showerror("错误", "cookie 失效", parent=dlg)
+            return
+        except Exception as e:  # noqa: BLE001 - surface any fetch failure in-GUI
+            messagebox.showerror("错误", f"拉取失败：{e}", parent=dlg)
+            return
+        write_connection(manual_dir, conn)
+        result["conn"] = conn
+        dlg.destroy()
+
+    btns = ttk.Frame(dlg)
+    btns.pack(fill="x", side="bottom", padx=12, pady=12)
+    ttk.Button(btns, text="取消", command=dlg.destroy).pack(side="right")
+    ttk.Button(btns, text="连接并拉取", command=on_connect).pack(
+        side="right", padx=6)
+
+    dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+    dlg.grab_set()
+    dlg.wait_window()
+    if temp_root is not None:
+        temp_root.destroy()
+    return result["conn"]
+
+
+def launch_gui(settings: Settings, manual_dir, problems, teams, saved,
+               conn: dict) -> None:
     """Build and run the setup window. Blocking (tkinter mainloop)."""
     import tkinter as tk
     from tkinter import colorchooser, messagebox, simpledialog, ttk
 
     manual_dir = Path(manual_dir)
 
-    problem_rows = build_problem_rows(problems, saved.get("problems") or {})
+    problem_rows = build_problem_rows(problems, saved.get("problems") or {},
+                                      saved.get("print_problem"))
     group_defs = {str(gid): {"name": str((g or {}).get("name") or "")}
                   for gid, g in (saved.get("groups") or {}).items()}
     team_rows = build_team_rows(teams, group_defs, saved.get("teams") or {})
@@ -257,10 +394,12 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
     notebook.pack(fill="both", expand=True)
 
     pframe = ttk.Frame(notebook)
-    tree = ttk.Treeview(pframe, columns=("ordinal", "label", "name", "color"),
-                        show="headings", height=18)
+    tree = ttk.Treeview(
+        pframe, columns=("ordinal", "label", "name", "color", "print"),
+        show="headings", height=18)
     for col, text, width in (("ordinal", "#", 40), ("label", "题号", 100),
-                             ("name", "名称", 320), ("color", "颜色", 200)):
+                             ("name", "名称", 320), ("color", "颜色", 200),
+                             ("print", "打印题", 70)):
         tree.heading(col, text=text)
         tree.column(col, width=width, anchor="w")
     tree.pack(side="left", fill="both", expand=True)
@@ -273,7 +412,20 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
             star = "*" if row["changed"] else " "
             tree.insert("", "end", iid=str(i), tags=(tag,),
                         values=(row["ordinal"], row["label"], star + row["name"],
-                                "■ " + row["color"]))
+                                "■ " + row["color"],
+                                "●" if row["print"] else "—"))
+
+    def on_problem_click(event) -> None:
+        if tree.identify_column(event.x) != "#5":  # 打印题 column
+            return
+        row_id = tree.identify_row(event.y)
+        if not row_id:
+            return
+        toggle_print_problem(problem_rows, int(row_id))
+        mark_dirty()
+        refresh_problems()
+
+    tree.bind("<Button-1>", on_problem_click)
 
     def problem_index() -> int | None:
         sel = tree.selection()
@@ -512,9 +664,9 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
                 parent=root):
             return
         try:
-            problems2, teams2 = _fetch_remote(settings)
+            problems2, teams2 = _fetch_remote(conn, settings.pta_requests_per_second)
         except PtaAuthError:
-            messagebox.showerror("错误", "cookie 失效，请更新 config.json 的 pta_cookie",
+            messagebox.showerror("错误", "cookie 失效，请更新 manual/setup-connection.json",
                                  parent=root)
             return
         except Exception as e:  # noqa: BLE001 - surface any fetch failure in-GUI
@@ -522,7 +674,9 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
             return
         old_colors = {r["label"]: {"color": r["color"], "rgb": r["rgb"]}
                       for r in problem_rows if r["changed"]}
-        problem_rows = build_problem_rows(problems2, old_colors)
+        current_print = next((r["label"] for r in problem_rows if r["print"]),
+                             None)
+        problem_rows = build_problem_rows(problems2, old_colors, current_print)
         saved_teams = {tid: {"group_ids": sorted(gs)}
                        for tid, gs in assignments.items() if gs}
         team_rows = build_team_rows(teams2, group_defs, saved_teams)
@@ -539,11 +693,14 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
     def save() -> None:
         problems_colors = {
             r["label"]: {"color": r["color"], "rgb": r["rgb"]}
-            for r in problem_rows if r["changed"]}
+            for r in problem_rows if r["changed"] and not r["print"]}
         groups_out = {gid: {"name": g["name"]} for gid, g in group_defs.items()}
         teams_out = {tid: {"group_ids": sorted(gs)}
                      for tid, gs in assignments.items() if gs}
-        write_manual_setup(manual_dir, problems_colors, groups_out, teams_out)
+        print_problem = next((r["label"] for r in problem_rows if r["print"]),
+                             None)
+        write_manual_setup(manual_dir, problems_colors, groups_out, teams_out,
+                           print_problem)
         state["dirty"] = False
         root.title("pta2ccs setup — 首次运行配置")
         messagebox.showinfo("保存到 manual", f"已写入 {manual_dir}", parent=root)
@@ -554,9 +711,53 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
             return
         root.destroy()
 
+    def change_connection() -> None:
+        nonlocal problem_rows, team_rows
+        new_conn = launch_connection_dialog(root, settings, manual_dir,
+                                            dict(conn))
+        if new_conn is None:
+            return
+        try:
+            problems2, teams2 = _fetch_remote(new_conn,
+                                              settings.pta_requests_per_second)
+        except PtaAuthError:
+            messagebox.showerror("错误", "cookie 失效", parent=root)
+            return
+        except Exception as e:  # noqa: BLE001 - surface any fetch failure in-GUI
+            messagebox.showerror("错误", f"拉取失败：{e}", parent=root)
+            return
+        contest_changed = conn.get("contest_id") != new_conn.get("contest_id")
+        conn.clear()
+        conn.update(new_conn)
+        old_colors = {r["label"]: {"color": r["color"], "rgb": r["rgb"]}
+                      for r in problem_rows if r["changed"]}
+        print_label = next((r["label"] for r in problem_rows if r["print"]),
+                           None)
+        if contest_changed and messagebox.askyesno(
+                "比赛连接",
+                "比赛 ID 已变更，是否清空分组指派和打印题选择？"
+                "（颜色和分组定义保留）", parent=root):
+            assignments.clear()
+            print_label = None
+        saved_teams = {tid: {"group_ids": sorted(gs)}
+                       for tid, gs in assignments.items() if gs}
+        problem_rows = build_problem_rows(problems2, old_colors, print_label)
+        team_rows = build_team_rows(teams2, group_defs, saved_teams)
+        for r in team_rows:
+            assignments.setdefault(r["id"], set(r["group_ids"]))
+        # refetch rebuilds team_rows in 学号 order — reset the view sort
+        sort_state["col"] = None
+        sort_state["reverse"] = False
+        set_team_headings()
+        refresh_problems()
+        refresh_teams()
+        refresh_groups()
+
     ttk.Button(bar, text="↺ 重新拉取数据", command=refetch).pack(
         side="left", padx=4, pady=4)
     ttk.Button(bar, text="保存到 manual", command=save).pack(
+        side="left", padx=4, pady=4)
+    ttk.Button(bar, text="🔗 比赛连接…", command=change_connection).pack(
         side="left", padx=4, pady=4)
     ttk.Button(bar, text="退出", command=on_close).pack(
         side="right", padx=4, pady=4)
@@ -575,12 +776,27 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, saved) -> None:
 def main() -> None:
     settings = load_settings(Path("config.json"))
     saved = load_manual_setup(settings.manual_dir)
+    conn = load_connection(settings.manual_dir)
+    if conn is None:
+        # first run / missing connection file — dialog, prefilled from any
+        # residual contest_id/pta_cookie still sitting in config.json
+        prefill = _residual_config_prefill(Path("config.json"))
+        conn = launch_connection_dialog(None, settings, settings.manual_dir,
+                                        prefill)
+        if conn is None:
+            raise SystemExit(0)  # user cancelled
+        saved = load_manual_setup(settings.manual_dir)
     try:
-        problems, teams = _fetch_remote(settings)
+        problems, teams = _fetch_remote(conn, settings.pta_requests_per_second)
     except PtaAuthError:
-        print("cookie 失效，请更新 config.json 的 pta_cookie", file=sys.stderr)
-        raise SystemExit(1)
-    launch_gui(settings, settings.manual_dir, problems, teams, saved)
+        # connection may be stale — fall back to the dialog
+        conn = launch_connection_dialog(
+            None, settings, settings.manual_dir,
+            {"contest_id": conn["contest_id"], "pta_cookie": conn["pta_cookie"]})
+        if conn is None:
+            raise SystemExit(1)
+        problems, teams = _fetch_remote(conn, settings.pta_requests_per_second)
+    launch_gui(settings, settings.manual_dir, problems, teams, saved, conn)
 
 
 if __name__ == "__main__":
