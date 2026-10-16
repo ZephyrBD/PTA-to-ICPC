@@ -1,20 +1,20 @@
 # PTA to ICPC
 
-![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![tests](https://img.shields.io/badge/tests-513%20passed-brightgreen)
+![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-0078D6) ![platform](https://img.shields.io/badge/platform-Linux-FCC624) ![platform](https://img.shields.io/badge/platform-macOS-000000) ![tests](https://img.shields.io/badge/tests-513%20passed-brightgreen)
 
-把 PTA (pintia.cn) 上账号已可见的比赛数据转译为 ICPC Contest API 2026-01 只读服务，供 ICPC CDS→resolver 与 xcpc-tools（气球/打印）消费。
+把 PTA 上可见的比赛数据转译为 ICPC Contest API 转接服务，供 ICPC Tools 与 Hydro/xcpc-tools 使用。
 
 > [!WARNING]
 > 本项目仅为 **ICPC Contest API 协议研究与技术演示工具**。
 > 它仅在本地读取账号已可见的比赛数据，将其转译为标准化竞赛接口。
 > 
-> 1. 本工具**仅用于技术学习、本地测试**；
-> 2. 禁止在PTA生产环境，使用本工具举办正式竞赛；
-> 3. 使用本工具自动化访问PTA服务，需自行遵守PTA的用户协议；
-> 4. 自动化轮询PTA网页接口可能违反平台服务条款，使用者自行承担全部法律与账号风险；
-> 5. 本项目不提供任何形式的生产环境可用性承诺，无技术支持。
+> 1. 本工具**仅用于技术学习、本地测试**。
+> 2. 禁止在生产环境，使用本工具举办正式竞赛。
+> 3. 使用本工具自动化访问PTA服务，需自行遵守PTA的用户协议。
+> 4. 自动化访问PTA网页接口可能违反平台服务条款，使用者自行承担全部法律与账号风险。
+> 5. 本项目不提供任何形式的生产环境可用性承诺，不提供技术支持。
 
-PTA 官方另提供满足 Contest API 的付费服务，正式赛事建议直接采购或取得书面授权。
+PTA 官方提供稳定的 Contest API 的付费服务，正式赛事请直接采购。
 
 ## 特性
 
@@ -28,7 +28,6 @@ PTA 官方另提供满足 Contest API 的付费服务，正式赛事建议直接
 - **纯只读**：无任何写回 PTA 的端点，`capabilities` 为空。
 - **HTTP Basic 认证**：`/api/v4/` 支持 HTTP Basic 认证（用户名固定 `admin`，密码由 setup 随机生成、可在「比赛设置」tab 改）；`/healthz` 与本机自检保持开放。
 - **统一日志**：服务与 setup 的运行日志（含 uvicorn 启动与访问日志）按同一格式同时写入 stderr 与 `manual/pta2icpc.log`（5 MB × 3 大小轮转）。
-- **Windows 单机可跑**：绑 `127.0.0.1`，单机部署。
 
 ## 架构与数据流
 
@@ -47,20 +46,13 @@ flowchart LR
 
 ## 环境要求
 
-- Python 3.13+（见 `pyproject.toml`）。
-- [uv](https://docs.astral.sh/uv/)（下文用 `uv run …`；`.venv` 由 uv 管理）。
-- Windows。
-- tkinter（Python 标准库，仅 setup GUI 需要）。
-- 一个能查看该场比赛榜单的 PTA 账号 cookie（会过期，需覆盖整场比赛）。
-- 可选：一个 DOMjudge 打印脚本端点（`PRINT_SERVER`）。
+- Python 3.13+。
 
 ## 安装
 
 ```bash
 uv sync
 ```
-
-`uv sync` 会创建（或接管）`.venv` 并安装运行依赖与 `dev` 组（pytest）。在 `pta2icpc/` 目录下执行。
 
 ## 快速开始
 
@@ -116,7 +108,7 @@ uv sync
 ## 相关项目与致谢
 
 - [ICPC Contest API 2026-01](https://ccs-specs.icpc.io/2026-01/) —— 本项目实现的接口规范。
-- [ICPC Tools](https://github.com/icpctools/icpctools)（[CDS](https://tools.icpc.global/cds/) / Resolver）—— 主要消费方。
-- [DOMjudge](https://github.com/DOMjudge/domjudge)（[官网](https://www.domjudge.org/)）—— `/api/v4/` 与 balloons 形状的参考。
+- [ICPC Tools](https://github.com/icpctools/icpctools) —— 主要消费方。
+- [DOMjudge](https://github.com/DOMjudge/domjudge) —— `/api/v4/` 与 balloons 形状的参考。
 - [Hydro/xcpc-tools](https://github.com/hydro-dev/xcpc-tools) —— 气球 / 打印消费方（下文简称 xcpc-tools）。
 - [laobuzhang/PTA_BALL](https://github.com/laobuzhang/PTA_BALL) —— 本项目脱胎的参考项目。
