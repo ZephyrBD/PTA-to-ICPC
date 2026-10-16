@@ -1,4 +1,4 @@
-# pta2ccs
+# PTA Patch
 
 ![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![tests](https://img.shields.io/badge/tests-442%20passed-brightgreen)
 
@@ -19,16 +19,16 @@
 
 ```mermaid
 flowchart LR
-  PTA["PTA pintia.cn<br/>内部 JSON 接口"] -->|轮询拉取| P["pta2ccs :8000<br/>只读 Contest API"]
-  P -->|Contest API /api/v4| CDS["ICPC CDS :8080"]
-  CDS -->|event-feed + 定稿| R["ICPC resolver"]
-  P -->|/balloons + 打印| X["xcpc-tools :5283"]
+  PTA["PTA 接口"] -->|轮询拉取| P["PTA Patch"]
+  P -->|Contest API /api/v4| CDS["ICPC CDS"]
+  CDS -->|event-feed| R["ICPC resolver"]
+  P -->|/balloons + 打印| X["Hydro/xcpc-tools"]
 ```
 
-- PTA → pta2ccs：带 PTA cookie 轮询拉取提交/题目/队伍，翻译成 Contest API 对象并缓存。
-- pta2ccs → CDS：CDS 以 `RESTContestSource` 消费 `/api/v4/` 并镜像事件流。
+- PTA → PTA Patch：带 PTA cookie 轮询拉取提交/题目/队伍，翻译成 Contest API 对象并缓存。
+- PTA Patch → CDS：CDS 以 `RESTContestSource` 消费 `/api/v4/` 并镜像事件流。
 - CDS → resolver：定稿后 CDS 正常结束下载，resolver 无需 `--test` 即可运行。
-- pta2ccs → xcpc-tools：消费 `/balloons`（气球发放）与打印流水线。
+- PTA Patch → Hydro/xcpc-tools：消费 `/balloons`（气球发放）与打印流水线。
 
 ## 环境要求
 
@@ -47,19 +47,22 @@ python -m venv .venv
 
 ## 快速开始
 
-1. **首次配置**：`.venv/Scripts/python -m pta2ccs.setup` —— 一次性 GUI。首次弹出「比赛连接」对话框填 `contest_id` + PTA cookie（可选打印服务器 URL；比赛中要改可点顶栏「🔗 比赛连接…」）；再设置题目颜色 / 自定义分组 / 打印题 / 座位·队员·教练 / 比赛时间覆盖，保存后写出 `manual/contest/setup-*.json`。可重复运行。
-2. **启动服务**：在 `pta2ccs/` 目录下 `.venv/Scripts/python -m pta2ccs`（没有模块级 `app`，不能用 `uvicorn pta2ccs.app:app`）。
+1. **首次配置**：`.venv/Scripts/python -m ptapatch.setup` —— 一次性 GUI。首次弹出「比赛连接」对话框填 `contest_id` + PTA cookie（可选打印服务器 URL；比赛中要改可点顶栏「🔗 比赛连接…」）；再设置题目颜色 / 自定义分组 / 打印题 / 座位·队员·教练 / 比赛时间覆盖，保存后写出 `manual/contest/setup-*.json`。可重复运行。
+
+2. **启动服务**：在 `ptapatch/` 目录下 `.venv/Scripts/python -m ptapatch`（没有模块级 `app`，不能用 `uvicorn ptapatch.app:app`）。
+
 3. **自检**：`curl http://127.0.0.1:8000/healthz`、`curl http://127.0.0.1:8000/api/v4/`。
+
 4. **接入消费者**（片段里不放任何真实凭据）：
-
+   
    CDS `ccsConfig.xml` 里的 `<ccs>` 元素：
-
+   
    ```xml
-   <ccs url="http://127.0.0.1:8000/api/v4/contests/<contest_id>" user="pta2ccs" password="none"/>
+   <ccs url="http://127.0.0.1:8000/api/v4/contests/<contest_id>" user="ptapatch" password="none"/>
    ```
-
+   
    xcpc-tools `config.server.yaml`：
-
+   
    ```yaml
    type: domjudge
    server: http://127.0.0.1:8000

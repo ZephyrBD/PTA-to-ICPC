@@ -2,8 +2,8 @@ import datetime as dt
 
 import pytest
 
-from pta2ccs.models import error_body, make_access, make_api_info, sanitize_id
-from pta2ccs.timefmt import (
+from ptapatch.models import error_body, make_access, make_api_info, sanitize_id
+from ptapatch.timefmt import (
     parse_finalized_at,
     parse_pta_time,
     parse_reltime,
@@ -13,7 +13,7 @@ from pta2ccs.timefmt import (
 
 
 def test_parse_offset():
-    from pta2ccs.timefmt import parse_offset
+    from ptapatch.timefmt import parse_offset
     assert parse_offset("+08:00") == dt.timezone(dt.timedelta(hours=8))
     assert parse_offset("-05:00") == dt.timezone(dt.timedelta(hours=-5))
     assert parse_offset("+0800") == dt.timezone(dt.timedelta(hours=8))

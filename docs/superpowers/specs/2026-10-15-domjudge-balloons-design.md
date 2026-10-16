@@ -4,7 +4,7 @@
 
 ## 背景
 
-pta2ccs 增加 DOMjudge v4 兼容表面，供气球发放前端（DOMjudge 风格）消费：
+PTA Patch 增加 DOMjudge v4 兼容表面，供气球发放前端（DOMjudge 风格）消费：
 - `GET  /api/v4/contests` —— 比赛列表（DOMjudge contest 对象）
 - `GET  /api/v4/contests/{cid}/balloons?todo=` —— 气球列表
 - `POST /api/v4/contests/{cid}/balloons/{balloonId}/done` —— 标记已发（204）
@@ -18,7 +18,7 @@ pta2ccs 增加 DOMjudge v4 兼容表面，供气球发放前端（DOMjudge 风�
 - `?todo=true` 只返回未发放；排序 = 未发放在前、已发放在后，各组内按提交时间**倒序**。
 - `team` = `"<teamid>: <队名>"`；`total` = 该队全部已发题目 `{label: contestproblem}`，按 label 排序。
 
-## 1. 新模块 `pta2ccs/balloons.py`
+## 1. 新模块 `ptapatch/balloons.py`
 
 ### 1.1 纯函数：推导与构造
 

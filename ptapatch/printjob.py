@@ -1,6 +1,6 @@
 """DOMjudge-style print job: build + POST (pure logic, no I/O here).
 
-pta2ccs plays DOMjudge for the contest's print problem: a team's
+PTA Patch plays DOMjudge for the contest's print problem: a team's
 submission to that problem is a print request. The receiving end (xcpctools
 / Hydro) expects the same multipart shape the DOMjudge print script sends:
 

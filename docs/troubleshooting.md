@@ -4,11 +4,11 @@
 
 ## cookie 过期
 
-**现象**：启动 / 轮询时 stderr 出现 `connection not configured — run 'python -m pta2ccs.setup' first`；或运行中 `/healthz` 的 `cookie_ok` 变 `false`、日志出现 `PTA auth failed (cookie expired?)`；setup GUI 弹「**cookie 失效**」。
+**现象**：启动 / 轮询时 stderr 出现 `connection not configured — run 'python -m ptapatch.setup' first`；或运行中 `/healthz` 的 `cookie_ok` 变 `false`、日志出现 `PTA auth failed (cookie expired?)`；setup GUI 弹「**cookie 失效**」。
 
 **原因**：PTA 的 `PTASession` cookie 有时效，且只对该场比赛有效。
 
-**处理**：重新获取 cookie，运行 `.venv/Scripts/python -m pta2ccs.setup`，在「比赛连接」对话框更新。确认 cookie 覆盖整场比赛。
+**处理**：重新获取 cookie，运行 `.venv/Scripts/python -m ptapatch.setup`，在「比赛连接」对话框更新。确认 cookie 覆盖整场比赛。
 
 ## PTA 429 限流
 
@@ -18,21 +18,21 @@
 
 **处理**：程序自动冷却，无需干预。可降低 `pta_requests_per_second` 或 `detail_fetch_per_round`（见 `docs/configuration.md`），或临时设 `fetch_details: false`。冷却期间不发起任何 PTA 请求，也不计为失败。
 
-## 必须在 `pta2ccs/` 目录下运行
+## 必须在 `ptapatch/` 目录下运行
 
 **现象**：读不到配置 / 连接，或写出了意外的 `manual/`。
 
-**原因**：所有路径（`manual/`、`pta2ccs/paths.py` 的常量）都是**相对路径**。
+**原因**：所有路径（`manual/`、`ptapatch/paths.py` 的常量）都是**相对路径**。
 
-**处理**：始终在 `pta2ccs/` 目录下运行命令（`.venv/Scripts/python -m pta2ccs`、`-m pta2ccs.setup`、pytest）。
+**处理**：始终在 `ptapatch/` 目录下运行命令（`.venv/Scripts/python -m ptapatch`、`-m ptapatch.setup`、pytest）。
 
-## 不能用 `uvicorn pta2ccs.app:app`
+## 不能用 `uvicorn ptapatch.app:app`
 
-**现象**：`uvicorn pta2ccs.app:app` 报找不到 `app` 或启动后行为异常。
+**现象**：`uvicorn ptapatch.app:app` 报找不到 `app` 或启动后行为异常。
 
 **原因**：模块级没有 `app` 对象，只有工厂 `create_app`；启动时还要读连接文件、构建 poller。
 
-**处理**：用 `.venv/Scripts/python -m pta2ccs`。
+**处理**：用 `.venv/Scripts/python -m ptapatch`。
 
 ## `manual/balloons.json` 损坏 / 清空
 
@@ -54,6 +54,6 @@
 
 **现象**：xcpc-tools 面板上的 `Balloon New` 指标只增不减。
 
-**原因**：这是**对方**的 Prometheus 计数器，每次同步累加整批响应条数；`Sent` / `Done` 只在志愿者客户端领取 / 完成时才增加。**不是 pta2ccs 的 bug。**
+**原因**：这是**对方**的 Prometheus 计数器，每次同步累加整批响应条数；`Sent` / `Done` 只在志愿者客户端领取 / 完成时才增加。**不是 PTA Patch 的 bug。**
 
 **处理**：忽略，或按 xcpc-tools 自己的文档理解其语义。

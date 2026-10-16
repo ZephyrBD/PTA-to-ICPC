@@ -18,7 +18,7 @@ def make_api_info() -> dict:
     return {
         "version": "2026-01",
         "version_url": "https://ccs-specs.icpc.io/2026-01/contest_api",
-        "provider": {"name": "pta2ccs"},
+        "provider": {"name": "PTA Patch"},
     }
 
 

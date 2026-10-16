@@ -6,10 +6,10 @@ import time
 import httpx
 import pytest
 
-from pta2ccs.config import Settings
-from pta2ccs.poller import PRINT_FETCH_PER_ROUND, PRINT_MAX_ATTEMPTS, Poller, drop_print_problem
-from pta2ccs.pta.client import PtaRateLimitError
-from pta2ccs.store import Store
+from ptapatch.config import Settings
+from ptapatch.poller import PRINT_FETCH_PER_ROUND, PRINT_MAX_ATTEMPTS, Poller, drop_print_problem
+from ptapatch.pta.client import PtaRateLimitError
+from ptapatch.store import Store
 from tests.test_printjob import parse_multipart
 
 ZERO_SUB_TEAM_ID = "9001540000000000001"
@@ -113,7 +113,7 @@ def test_poll_auth_error_sets_cookie_flag():
     poller, client, store = make_poller()
 
     async def boom():
-        from pta2ccs.pta.client import PtaAuthError
+        from ptapatch.pta.client import PtaAuthError
         raise PtaAuthError("expired")
 
     client.fetch_submissions = boom  # type: ignore[method-assign]
@@ -165,7 +165,7 @@ def test_empty_roster_on_config_round_keeps_previous_cache(caplog):
     assert ZERO_SUB_TEAM_ID in store.snapshot().teams
     client.teams = []  # next config round returns an empty roster
     time.sleep(0.02)   # ...and it must actually be a config round
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.poller"):
         asyncio.run(poller.poll_once())
     snap = store.snapshot()
     assert ZERO_SUB_TEAM_ID in snap.teams
@@ -245,7 +245,7 @@ def test_detail_per_id_failure_retries_next_round(caplog):
     poller, client, store = make_poller()
     client.subs = [sub_row("1"), sub_row("2")]
     client.detail_fail_ids = {"2"}
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.poller"):
         asyncio.run(poller.poll_once())
     snap = store.snapshot()
     # failure doesn't kill the cycle: both submissions present, only the
@@ -296,7 +296,7 @@ def test_rate_limited_round_is_not_a_failure_and_skips_until_cooldown(caplog):
     poller, client, store = make_poller()
     assert poller.status["rate_limited_until"] is None
     client.subs_error = PtaRateLimitError(retry_after=30.0)
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.poller"):
         asyncio.run(poller.poll_once())
         assert client.subs_calls == 1
         # rate limit is NOT a failure: counter untouched, last_success untouched
@@ -317,7 +317,7 @@ def test_detail_rate_limit_does_not_fail_round(caplog):
     poller, client, store = make_poller(detail_fetch_per_round=5)
     client.subs = [sub_row("1"), sub_row("2")]
     client.detail_rate_limit_ids = {"1", "2"}
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.poller"):
         asyncio.run(poller.poll_once())
     # list succeeded → translate/apply still ran with what we have
     snap = store.snapshot()
@@ -548,7 +548,7 @@ def test_print_pipeline_respects_preexisting_sent_file(tmp_path):
 def test_print_pipeline_500_failure_retries_next_round(tmp_path, caplog):
     poller, client, store = make_pipeline_poller(tmp_path)
     capture_http(poller, status_code=500)
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.printjob"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.printjob"):
         asyncio.run(poller.poll_once())
     assert "1" not in poller._print_sent
     assert poller._print_attempts == {"1": 1}
@@ -570,7 +570,7 @@ def test_print_pipeline_gives_up_after_max_attempts(tmp_path, caplog):
         asyncio.run(poller.poll_once())
         assert "1" not in poller._print_sent
         assert poller._print_attempts["1"] == i + 1
-    with caplog.at_level(logging.ERROR, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.ERROR, logger="ptapatch.poller"):
         capture_http(poller, status_code=500)
         asyncio.run(poller.poll_once())  # attempt 11 -> permanent skip
     assert "1" in poller._print_sent
@@ -618,7 +618,7 @@ def test_print_pipeline_detail_failure_counts_attempt(tmp_path, caplog):
     poller, client, store = make_pipeline_poller(tmp_path)
     client.detail_fail_ids = {"1"}
     requests = capture_http(poller)
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.poller"):
         asyncio.run(poller.poll_once())
     assert requests == []  # source fetch failed -> nothing to send
     assert poller._print_attempts == {"1": 1}
@@ -630,7 +630,7 @@ def test_print_pipeline_detail_failure_counts_attempt(tmp_path, caplog):
 def test_print_sent_file_corrupt_starts_empty(tmp_path, caplog):
     (tmp_path / "print_sent.json").write_text("{not json",
                                               encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.poller"):
         poller, client, store = make_pipeline_poller(tmp_path)
     assert poller._print_sent == set()
     assert any("print sent set starts empty" in rec.message
@@ -720,7 +720,7 @@ class _FakeData:
 
 def test_pending_verdict_warning_deduped(caplog):
     poller, _, _ = make_poller()
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.poller"):
         for _ in range(3):
             poller._warn_pending_verdicts(_FakeData(2))
     warns = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -734,7 +734,7 @@ def test_pending_verdict_warning_deduped(caplog):
 
 def test_pending_verdict_warning_relogs_on_count_change(caplog):
     poller, _, _ = make_poller()
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.poller"):
         poller._warn_pending_verdicts(_FakeData(2))
         poller._warn_pending_verdicts(_FakeData(2))
         poller._warn_pending_verdicts(_FakeData(3))
@@ -744,7 +744,7 @@ def test_pending_verdict_warning_relogs_on_count_change(caplog):
 
 def test_pending_verdict_warning_resets_when_clear(caplog):
     poller, _, _ = make_poller()
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.poller"):
         poller._warn_pending_verdicts(_FakeData(2))          # logs
         poller._warn_pending_verdicts(_FakeData(0))          # clears
         poller._warn_pending_verdicts(_FakeData(2))          # logs again
@@ -754,6 +754,6 @@ def test_pending_verdict_warning_resets_when_clear(caplog):
 
 def test_pending_verdict_no_warning_after_finalized(caplog):
     poller, _, _ = make_poller()
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.poller"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.poller"):
         poller._warn_pending_verdicts(_FakeData(2, eou="2023-05-21T20:00:01+08:00"))
     assert [r for r in caplog.records if r.levelno == logging.WARNING] == []

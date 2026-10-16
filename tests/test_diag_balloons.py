@@ -1,6 +1,6 @@
 import json
 
-from pta2ccs.diag_balloons import (build_report, compare, live_docs,
+from ptapatch.diag_balloons import (build_report, compare, live_docs,
                                    load_local_state, load_xcpc_state, main)
 
 

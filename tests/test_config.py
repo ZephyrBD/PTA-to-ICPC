@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from pta2ccs.config import Settings, load_connection, load_manual, load_settings
+from ptapatch.config import Settings, load_connection, load_manual, load_settings
 
 
 def make_cfg(tmp_path: Path, **overrides) -> Path:

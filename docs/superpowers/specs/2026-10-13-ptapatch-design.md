@@ -1,11 +1,11 @@
-# pta2ccs — PTA 内部接口转 ICPC Contest API 设计文档
+# PTA Patch — PTA 内部接口转 ICPC Contest API 设计文档
 
 日期：2026-10-13（设计已经用户逐节确认）
 Spec 依据：ICPC CCS **Contest API 2026-01**（https://ccs-specs.icpc.io/2026-01/ ），速记见 `docs/contest-api.md`
 
 ## 目标
 
-做一个新服务 `pta2ccs/`：逆向 pintia.cn Web UI 的内部 JSON 接口取数，在本机暴露一个**完整只读子集**的 Contest API 2026-01 服务器，供气球打印工具等客户端消费。替代参考项目（`参考项目/`）的 Selenium 爬 HTML 方案；参考项目保持不动，本期不改气球打印客户端。
+做一个新服务 `ptapatch/`：逆向 pintia.cn Web UI 的内部 JSON 接口取数，在本机暴露一个**完整只读子集**的 Contest API 2026-01 服务器，供气球打印工具等客户端消费。替代参考项目（`参考项目/`）的 Selenium 爬 HTML 方案；参考项目保持不动，本期不改气球打印客户端。
 
 ## 已确认的约束
 
@@ -43,11 +43,11 @@ PTA 内部接口 ──httpx──▶ pta/client.py ──原始JSON──▶ tr
 ## 目录结构
 
 ```
-pta2ccs/
+ptapatch/
   pyproject.toml              # fastapi, uvicorn, httpx, pydantic; dev: pytest
   config.example.json
   manual.example/             # 手动补充 JSON 示例（实际 manual/ 不入库）
-  pta2ccs/
+  ptapatch/
     config.py                 # 加载/校验配置，fail fast
     models.py                 # Contest API 对象的 Pydantic 模型
     pta/client.py

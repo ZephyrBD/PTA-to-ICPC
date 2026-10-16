@@ -5,7 +5,7 @@ import re
 import httpx
 import pytest
 
-from pta2ccs.printjob import build_job, send_job
+from ptapatch.printjob import build_job, send_job
 
 
 def make_job(**overrides) -> dict:
@@ -132,13 +132,13 @@ def test_send_job_2xx_is_success(status: int):
 @pytest.mark.parametrize("status", [400, 404, 500])
 def test_send_job_non_2xx_is_failure(caplog, status: int):
     client = client_capturing({}, status_code=status)
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.printjob"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.printjob"):
         assert asyncio.run(send_job(client, "http://p/", make_job())) is False
     assert any("rejected job" in rec.message for rec in caplog.records)
 
 
 def test_send_job_transport_exception_is_failure(caplog):
     client = client_capturing({}, exc=httpx.ConnectError("boom"))
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.printjob"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.printjob"):
         assert asyncio.run(send_job(client, "http://p/", make_job())) is False
     assert any("post failed" in rec.message for rec in caplog.records)

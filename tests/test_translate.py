@@ -1,9 +1,9 @@
 import datetime as dt
 import logging
 
-from pta2ccs.models import sanitize_id
-from pta2ccs.timefmt import to_iso_time
-from pta2ccs.translate import pta_contest_times, translate
+from ptapatch.models import sanitize_id
+from ptapatch.timefmt import to_iso_time
+from ptapatch.translate import pta_contest_times, translate
 
 TZ = "+08:00"
 NOW = dt.datetime(2023, 5, 21, 10, 30, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))

@@ -4,7 +4,7 @@
 
 ## 背景与目标
 
-- PTA 打印题提交 = 打印请求。pta2ccs **扮演 DOMjudge**：拉取打印题提交的源码，
+- PTA 打印题提交 = 打印请求。PTA Patch **扮演 DOMjudge**：拉取打印题提交的源码，
   按 DOMjudge 打印脚本的 multipart 格式 POST 给 PRINT_SERVER（xcpctools/hydro，
   之后自己跑，是接收方）。脚本契约（发送端参考）：
 
@@ -35,7 +35,7 @@
 | `location` | snapshot 中 `team.label`（即座位号，post-override）；缺失则省略该字段 |
 | `group` | 队伍 group_ids → groups 名称，`,` 连接；空则**省略**（与脚本条件添加一致） |
 
-### 语言 id 全局映射（`pta2ccs/pta/langs.py` 新模块）
+### 语言 id 全局映射（`ptapatch/pta/langs.py` 新模块）
 
 - 映射表（PTA 枚举 → 标准 id；合并变体，first-name-wins 作为该 id 的显示名）：
   `GCC/MODERN_GCC/CLANG → c`，`GXX/CLANGXX → cpp`，`JAVAC → java`，
@@ -53,7 +53,7 @@
 
 ## 1. 打印流水线（方案 A）
 
-### 新模块 `pta2ccs/printjob.py`
+### 新模块 `ptapatch/printjob.py`
 
 - `build_job(*, source, filename, lang, tname, team, location, group) -> dict`
   纯函数 → `{"files": {"file": (filename, source_bytes, "text/plain")},
@@ -62,7 +62,7 @@
 - `async send_job(http_client, print_server, job, timeout=10.0) -> bool`
   httpx POST multipart（`files` + `data`），2xx → True，异常/非 2xx → False（打 warning）。
 
-### poller 改造（`pta2ccs/poller.py`）
+### poller 改造（`ptapatch/poller.py`）
 
 每轮顺序（print_server 未配置时保持**现状完全不变**）：
 

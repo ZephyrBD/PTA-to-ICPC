@@ -3,11 +3,11 @@ import datetime as dt
 import json
 import logging
 
-from pta2ccs.balloons import (BalloonState, _to_epoch, build_balloon,
+from ptapatch.balloons import (BalloonState, _to_epoch, build_balloon,
                               build_contestproblem, build_domjudge_contest,
                               build_domjudge_org, build_domjudge_team,
                               first_ac_pairs, time_sort_key)
-from pta2ccs.translate import ContestData, translate
+from ptapatch.translate import ContestData, translate
 
 TZ = dt.timezone(dt.timedelta(hours=8))
 NOW = dt.datetime(2023, 5, 21, 10, 0, 0, tzinfo=TZ)
@@ -457,7 +457,7 @@ def test_missing_file_starts_empty(tmp_path):
 def test_corrupt_file_starts_empty(tmp_path, caplog):
     path = tmp_path / "balloons.json"
     path.write_text("{not json", encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.balloons"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.balloons"):
         state = BalloonState(path)
     assert asyncio.run(state.snapshot_entries()) == {}
     assert any("starts empty" in rec.message for rec in caplog.records)
@@ -466,7 +466,7 @@ def test_corrupt_file_starts_empty(tmp_path, caplog):
 def test_wrong_shape_starts_empty(tmp_path, caplog):
     path = tmp_path / "balloons.json"
     path.write_text(json.dumps({"next_id": "x"}), encoding="utf-8")
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.balloons"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.balloons"):
         state = BalloonState(path)
     assert asyncio.run(state.snapshot_entries()) == {}
     assert any("starts empty" in rec.message for rec in caplog.records)

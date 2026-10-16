@@ -1,8 +1,8 @@
 import datetime as dt
 import logging
 
-from pta2ccs.store import Store
-from pta2ccs.translate import translate
+from ptapatch.store import Store
+from ptapatch.translate import translate
 
 TZ = "+08:00"
 NOW = dt.datetime(2023, 5, 21, 10, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
@@ -148,7 +148,7 @@ def test_finalized_snapshot_ignores_later_updates(caplog):
     snap = store.snapshot()
     assert snap.state["end_of_updates"] is not None
     changed = {"contest": dict(MANUAL["contest"], name="改名")}
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.store"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.store"):
         events = store.apply_all(make([base_sub("1")], now=ended,
                                       manual=changed))
     assert events == []
@@ -161,7 +161,7 @@ def test_finalized_snapshot_same_data_no_warning(caplog):
     ended = dt.datetime(2023, 5, 21, 15, 0, 0,
                         tzinfo=dt.timezone(dt.timedelta(hours=8)))
     store.apply_all(make([base_sub("1")], now=ended))
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.store"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.store"):
         events = store.apply_all(make([base_sub("1")], now=ended))
     assert events == []
     assert caplog.records == []
@@ -176,7 +176,7 @@ def test_finalized_snapshot_state_drift_does_not_warn(caplog):
                         tzinfo=dt.timezone(dt.timedelta(hours=8)))
     store.apply_all(make([base_sub("1")], now=ended))
     snap = store.snapshot()
-    with caplog.at_level(logging.WARNING, logger="pta2ccs.store"):
+    with caplog.at_level(logging.WARNING, logger="ptapatch.store"):
         e1 = store.apply_all(make([base_sub("1")],
                                   now=ended + dt.timedelta(seconds=5)))
         e2 = store.apply_all(make([base_sub("1")],

@@ -12,7 +12,7 @@ def main() -> None:
     s = load_settings()
     conn = load_connection()
     if conn is None:
-        print("connection not configured — run 'python -m pta2ccs.setup' first "
+        print("connection not configured — run 'python -m ptapatch.setup' first "
               "(manual/contest/setup-connection.json)", file=sys.stderr)
         raise SystemExit(1)
     uvicorn.run(_build_default_app(conn), host=s.host, port=s.port)

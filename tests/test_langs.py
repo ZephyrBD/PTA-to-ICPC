@@ -1,5 +1,5 @@
-from pta2ccs.models import sanitize_id
-from pta2ccs.pta.langs import (
+from ptapatch.models import sanitize_id
+from ptapatch.pta.langs import (
     STD_EXTENSIONS,
     extensions_for,
     primary_extension,

@@ -4,11 +4,11 @@ import datetime as dt
 import pytest
 from fastapi.testclient import TestClient
 
-from pta2ccs.app import _make_poller, create_app
-from pta2ccs.balloons import BalloonState
-from pta2ccs.config import Settings
-from pta2ccs.store import Store
-from pta2ccs.translate import translate
+from ptapatch.app import _make_poller, create_app
+from ptapatch.balloons import BalloonState
+from ptapatch.config import Settings
+from ptapatch.store import Store
+from ptapatch.translate import translate
 
 NOW = dt.datetime(2023, 5, 21, 10, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
 MANUAL = {"contest": {"name": "省赛", "start_time": "2023-05-21T09:00:00+08:00",
@@ -239,7 +239,7 @@ class _LifespanFakeClient:
 
 
 def _make_lifespan_app(closable: bool):
-    from pta2ccs.poller import Poller
+    from ptapatch.poller import Poller
     client = _LifespanFakeClient(closable)
     settings = Settings(poll_interval_seconds=0.01, config_poll_seconds=0.01)
     poller = Poller(client, Store(), settings, {"contest": {}},
