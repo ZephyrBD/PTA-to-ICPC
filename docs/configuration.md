@@ -35,8 +35,9 @@
 | `manual/balloons.json` | 气球发放状态（运行状态） | 运行时自动 | 是 |
 | `manual/print_sent.json` | 已发送打印 id（运行状态） | 运行时自动 | 是 |
 | `manual/cache/state.json` | 持久化 PTA 快照缓存（运行状态） | 运行时自动 | 是 |
+| `manual/pta2icpc.log` | 运行日志（自动生成、大小轮转） | 运行时自动 | 是 |
 
-`manual/balloons.json.tmp`、`manual/print_sent.json.tmp`、`manual/cache/state.json.tmp`、`manual/config/config.json.tmp` 是原子写临时文件（写入失败时可能残留）。
+`manual/balloons.json.tmp`、`manual/print_sent.json.tmp`、`manual/cache/state.json.tmp`、`manual/config/config.json.tmp` 是原子写临时文件（写入失败时可能残留）。`manual/pta2icpc.log.1` / `.2` / `.3` 是日志轮转的备份文件。
 
 启动时自动创建 `manual/`、`manual/config/`、`manual/contest/`、`manual/cache/`（`pta2icpc/paths.py:ensure_dirs`）。
 
@@ -50,7 +51,15 @@
 
 路径都是**相对路径**，因此所有命令必须在 `pta2icpc/` 目录下运行。在别处运行会读写错误的 `manual/`。
 
+## 日志
+
+服务与 setup GUI 两个入口共用同一套日志配置（`pta2icpc/logging_config.py`），同一格式写到 **stderr** 与 **`manual/pta2icpc.log`**（`pta2icpc-diag` 是 stdlib-only 只读诊断，报表走 stdout，不写日志文件）：
+
+- 格式：`%(asctime)s %(levelname)-8s %(name)s: %(message)s`，时间 `%Y-%m-%d %H:%M:%S`（例：`2026-10-16 15:12:33 INFO     pta2icpc.poller: restored 42 submissions from cache`）。
+- 默认级别 `INFO`；uvicorn 的启动日志与访问日志（每条请求一行）也走同一格式与同一文件。
+- 轮转：单文件 5 MB、保留 3 份备份（`pta2icpc.log` → `pta2icpc.log.1` …）。
+
 ## 密钥
 
 - `manual/contest/setup-connection.json` 含 PTA cookie（`pta_cookie`）与可选打印服务器 URL；`manual/config/config.json` 含接口密码（`api_password`）。这两者都是密钥载体；整个 `manual/` 已 gitignore。
-- 不要把 cookie 或 `api_password` 复制进任何文档、日志或提交。唯一例外：服务启动时把接口凭据打印到控制台（`Server View User Info: admin / <密码>`），方便操作者直接读取。
+- 不要把 cookie 或 `api_password` 复制进任何文档、日志或提交。唯一例外：服务启动时把接口凭据打印到控制台（`Server View User Info: admin / <密码>`），方便操作者直接读取——这一行**仅输出到控制台，绝不写入日志文件**（`manual/pta2icpc.log`）。

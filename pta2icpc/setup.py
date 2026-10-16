@@ -28,6 +28,7 @@ from pathlib import Path
 from . import paths
 from .auth import generate_api_password
 from .config import Settings, load_connection, load_settings
+from .logging_config import configure_logging
 from .pta.client import PtaAuthError, PtaClient
 from .timefmt import parse_finalized_at, parse_reltime, to_iso_time
 from .translate import PALETTE, resolve_contest_times
@@ -1475,6 +1476,8 @@ def launch_gui(settings: Settings, problems, teams, meta, saved,
 
 
 def main() -> None:
+    paths.ensure_dirs()
+    configure_logging()
     show_compliance_warning()
     settings = load_settings()
     saved = load_manual_setup()

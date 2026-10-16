@@ -2,13 +2,21 @@
 
 [← 返回 README](../README.md)
 
+## 日志排查（`manual/pta2icpc.log`）
+
+**用途**：服务与 setup 入口的运行日志（含 uvicorn 启动与访问日志）统一写到 `manual/pta2icpc.log`，同时打到 stderr。排查问题时先看这个文件。（`pta2icpc-diag` 是 stdlib-only 的只读诊断，报表走 stdout，**不**写日志文件。）
+
+**格式**：每行 `YYYY-MM-DD HH:MM:SS LEVEL    logger: message`（例 `2026-10-16 15:12:33 INFO     pta2icpc.poller: restored 42 submissions from cache`）。`pta2icpc.*` 是程序日志，`uvicorn.*` 是服务日志。
+
+**轮转**：单文件 5 MB、保留 3 份备份（`pta2icpc.log.1` …）；级别固定 `INFO`（无 CLI / 环境变量开关）。日志文件绝不写入 PTA cookie 或 `api_password`。
+
 ## cookie 过期
 
 **现象**：启动 / 轮询时 stderr 出现 `connection not configured — run 'python -m pta2icpc.setup' first`；或运行中 `/healthz` 的 `cookie_ok` 变 `false`、日志出现 `PTA auth failed (cookie expired?)`；setup GUI 弹「**cookie 失效**」。
 
 **原因**：PTA 的 `PTASession` cookie 有时效，且只对该场比赛有效。
 
-**处理**：重新获取 cookie，运行 `.venv/Scripts/python -m pta2icpc.setup`，在「比赛连接」对话框更新。确认 cookie 覆盖整场比赛。
+**处理**：重新获取 cookie，运行 `uv run pta2icpc-setup`，在「比赛连接」对话框更新。确认 cookie 覆盖整场比赛。
 
 ## `/api/v4/` 返回 401 / 认证失败
 
@@ -24,13 +32,13 @@
 
 **原因**：`manual/config/config.json` 里没有 `api_password`（认证**不可关闭**，必须有密码）。
 
-**处理**：运行 `.venv/Scripts/python -m pta2icpc.setup`，在「比赛设置」tab 的「接口认证」区保存密码（首次运行 setup 会自动生成一个密码）。
+**处理**：运行 `uv run pta2icpc-setup`，在「比赛设置」tab 的「接口认证」区保存密码（首次运行 setup 会自动生成一个密码）。
 
 ## 忘记接口密码
 
 **现象**：不知道 `/api/v4/` 的 Basic 密码。
 
-**处理**：重跑 `.venv/Scripts/python -m pta2icpc.setup`，在「比赛设置」tab 点「随机重置」并保存，然后**重启服务**；或直接查看 `manual/config/config.json` 的 `api_password`。启动服务时控制台也会打印 `Server View User Info: admin / <密码>`。消费者侧同步更新凭据。
+**处理**：重跑 `uv run pta2icpc-setup`，在「比赛设置」tab 点「随机重置」并保存，然后**重启服务**；或直接查看 `manual/config/config.json` 的 `api_password`。启动服务时控制台也会打印 `Server View User Info: admin / <密码>`。消费者侧同步更新凭据。
 
 ## PTA 429 限流
 
@@ -46,7 +54,7 @@
 
 **原因**：所有路径（`manual/`、`pta2icpc/paths.py` 的常量）都是**相对路径**。
 
-**处理**：始终在 `pta2icpc/` 目录下运行命令（`.venv/Scripts/python -m pta2icpc`、`-m pta2icpc.setup`、pytest）。
+**处理**：始终在 `pta2icpc/` 目录下运行命令（`uv run pta2icpc`、`uv run pta2icpc-setup`、`uv run python -B -m pytest -q -p no:cacheprovider`）。
 
 ## 不能用 `uvicorn pta2icpc.app:app`
 
@@ -54,7 +62,7 @@
 
 **原因**：模块级没有 `app` 对象，只有工厂 `create_app`；启动时还要读连接文件、构建 poller。
 
-**处理**：用 `.venv/Scripts/python -m pta2icpc`。
+**处理**：用 `uv run pta2icpc`。
 
 ## `manual/balloons.json` 损坏 / 清空
 

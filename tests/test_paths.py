@@ -30,6 +30,7 @@ def test_path_constants():
     assert paths.PRINT_SENT_FILE == Path("manual/print_sent.json")
     assert paths.CACHE_DIR == Path("manual/cache")
     assert paths.CACHE_FILE == Path("manual/cache/state.json")
+    assert paths.LOG_FILE == Path("manual/pta2icpc.log")
 
 
 def test_ensure_dirs_creates_manual_dirs(tmp_path, monkeypatch):

@@ -15,6 +15,7 @@ BALLOONS_FILE = MANUAL_DIR / "balloons.json"
 PRINT_SENT_FILE = MANUAL_DIR / "print_sent.json"
 CACHE_DIR = MANUAL_DIR / "cache"
 CACHE_FILE = CACHE_DIR / "state.json"
+LOG_FILE = MANUAL_DIR / "pta2icpc.log"
 
 
 def ensure_dirs() -> None:

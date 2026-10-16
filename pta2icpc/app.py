@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import sys
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -22,6 +22,8 @@ from .scoreboard import compute_scoreboard
 from .store import Store
 from .timefmt import parse_offset
 from .translate import ContestData
+
+log = logging.getLogger(__name__)
 
 COLLECTIONS = {
     "groups": ("groups", None),
@@ -324,8 +326,8 @@ def _build_default_app(conn: dict | None = None) -> FastAPI:
     if conn is None:
         conn = load_connection()
         if conn is None:
-            print("connection not configured — run 'python -m pta2icpc.setup' "
-                  "first", file=sys.stderr)
+            log.error("connection not configured — run 'python -m pta2icpc.setup' "
+                      "first")
             raise SystemExit(1)
     manual = load_manual()
     store = Store()

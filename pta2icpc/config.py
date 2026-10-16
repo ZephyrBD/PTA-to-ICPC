@@ -1,10 +1,12 @@
 import json
-import sys
+import logging
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from .paths import CONFIG_FILE, CONNECTION_FILE, CONTEST_DIR
+
+log = logging.getLogger(__name__)
 
 
 class Settings(BaseModel):
@@ -36,7 +38,7 @@ class Settings(BaseModel):
 
 
 def _fail(msg: str) -> None:
-    print(f"config error: {msg}", file=sys.stderr)
+    log.error("config error: %s", msg)
     raise SystemExit(1)
 
 
