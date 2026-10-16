@@ -616,25 +616,34 @@ def launch_team_dialog(parent, title: str, meta: dict) -> dict | None:
 
     dlg = tk.Toplevel(parent)
     dlg.title(title)
-    dlg.geometry("320x420")
+    dlg.geometry("360x460")
     dlg.resizable(False, False)
+    dlg.columnconfigure(0, weight=1)
+    dlg.rowconfigure(3, weight=1)  # members box absorbs slack; buttons stay low
 
     result: dict = {"meta": None}
     members = list(meta.get("members") or [])
     coaches = list(meta.get("coaches") or [])
 
-    ttk.Label(dlg, text="座位号").pack(anchor="w", padx=12, pady=(12, 0))
+    ttk.Label(dlg, text="座位号").grid(row=0, column=0, columnspan=2,
+                                       sticky="w", padx=12, pady=(12, 0))
     seat_entry = ttk.Entry(dlg, width=32)
-    seat_entry.pack(fill="x", padx=12)
+    seat_entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12)
     seat_entry.insert(0, str(meta.get("seat") or ""))
 
-    ttk.Label(dlg, text="队员").pack(anchor="w", padx=12, pady=(8, 0))
+    ttk.Label(dlg, text="队员").grid(row=2, column=0, columnspan=2,
+                                     sticky="w", padx=12, pady=(8, 0))
     members_list = tk.Listbox(dlg, height=6, exportselection=False)
-    members_list.pack(fill="x", padx=12)
+    members_list.grid(row=3, column=0, sticky="nsew", padx=(12, 0))
+    members_btns = ttk.Frame(dlg)
+    members_btns.grid(row=3, column=1, sticky="n", padx=(6, 12))
 
-    ttk.Label(dlg, text="教练").pack(anchor="w", padx=12, pady=(8, 0))
+    ttk.Label(dlg, text="教练").grid(row=4, column=0, columnspan=2,
+                                     sticky="w", padx=12, pady=(8, 0))
     coaches_list = tk.Listbox(dlg, height=4, exportselection=False)
-    coaches_list.pack(fill="x", padx=12)
+    coaches_list.grid(row=5, column=0, sticky="nsew", padx=(12, 0))
+    coaches_btns = ttk.Frame(dlg)
+    coaches_btns.grid(row=5, column=1, sticky="n", padx=(6, 12))
 
     def refill(lb, names: list) -> None:
         lb.delete(0, "end")
@@ -656,14 +665,14 @@ def launch_team_dialog(parent, title: str, meta: dict) -> dict | None:
         (members if kind == "members" else coaches).pop(idx)
         refill(lb, members if kind == "members" else coaches)
 
-    for kind, lb in (("members", members_list), ("coaches", coaches_list)):
-        btns = ttk.Frame(dlg)
-        btns.pack(fill="x", padx=12, pady=(2, 0))
-        ttk.Button(btns, text="＋添加",
-                   command=lambda k=kind, b=lb: add(k, b)).pack(side="left")
-        ttk.Button(btns, text="移除",
+    for kind, lb, box in (("members", members_list, members_btns),
+                          ("coaches", coaches_list, coaches_btns)):
+        ttk.Button(box, text="＋添加",
+                   command=lambda k=kind, b=lb: add(k, b)).pack(
+            anchor="w", fill="x")
+        ttk.Button(box, text="移除",
                    command=lambda k=kind, b=lb: remove(k, b)).pack(
-            side="left", padx=4)
+            anchor="w", fill="x", pady=(4, 0))
 
     refill(members_list, members)
     refill(coaches_list, coaches)
@@ -674,7 +683,7 @@ def launch_team_dialog(parent, title: str, meta: dict) -> dict | None:
         dlg.destroy()
 
     btns = ttk.Frame(dlg)
-    btns.pack(fill="x", side="bottom", padx=12, pady=12)
+    btns.grid(row=6, column=0, columnspan=2, sticky="ew", padx=12, pady=12)
     ttk.Button(btns, text="取消", command=dlg.destroy).pack(side="right")
     ttk.Button(btns, text="确定", command=on_ok).pack(side="right", padx=6)
 
@@ -733,14 +742,22 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
     notebook.pack(fill="both", expand=True)
 
     pframe = ttk.Frame(notebook)
+    # tree + a vertical scrollbar share one box so the 快捷色板 panel (packed
+    # side=right in pframe) stays flush with the window edge and the
+    # scrollbar hugs the tree
+    ptable = ttk.Frame(pframe)
+    ptable.pack(side="left", fill="both", expand=True)
     tree = ttk.Treeview(
-        pframe, columns=("ordinal", "label", "name", "color"),
+        ptable, columns=("ordinal", "label", "name", "color"),
         show="headings", height=18)
     for col, text, width in (("ordinal", "#", 40), ("label", "题号", 100),
                              ("name", "名称", 320), ("color", "颜色", 200)):
         tree.heading(col, text=text)
         tree.column(col, width=width, anchor="w")
     tree.pack(side="left", fill="both", expand=True)
+    pscroll = ttk.Scrollbar(ptable, orient="vertical", command=tree.yview)
+    pscroll.pack(side="right", fill="y")
+    tree.configure(yscrollcommand=pscroll.set)
 
     print_var = tk.StringVar(value="")
 
@@ -760,18 +777,20 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
         mark_dirty()
 
     def rebuild_print_panel() -> None:
-        for child in print_frame.winfo_children():
+        for child in print_inner.winfo_children():
             child.destroy()
-        ttk.Radiobutton(print_frame, text="不设打印题", value="",
-                        variable=print_var,
-                        command=on_print_selected).pack(anchor="w", padx=8,
-                                                        pady=2)
+        first = ttk.Radiobutton(print_inner, text="不设打印题", value="",
+                                variable=print_var,
+                                command=on_print_selected)
+        first.pack(anchor="w", padx=8, pady=2)
+        _bind_mousewheel(first, print_canvas)
         for row in problem_rows:
-            ttk.Radiobutton(print_frame,
-                            text=f"{row['label']} {row['name']}",
-                            value=str(row["label"]), variable=print_var,
-                            command=on_print_selected).pack(anchor="w", padx=8,
-                                                            pady=1)
+            rb = ttk.Radiobutton(print_inner,
+                                 text=f"{row['label']} {row['name']}",
+                                 value=str(row["label"]), variable=print_var,
+                                 command=on_print_selected)
+            rb.pack(anchor="w", padx=8, pady=1)
+            _bind_mousewheel(rb, print_canvas)
         sync_print_panel()
 
     def refresh_problems() -> None:
@@ -831,10 +850,42 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
               foreground="#666").pack(anchor="w")
 
     ttk.Separator(pside, orient="horizontal").pack(fill="x", pady=8)
+
+    def _bind_mousewheel(widget, canvas) -> None:
+        # wheel over the canvas or any radio scrolls the radio list. delta
+        # is 120-based on Windows; Button-4/5 cover X11 (no-op on Windows).
+        widget.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+        widget.bind("<Button-4>",
+                    lambda _e: canvas.yview_scroll(-1, "units"))
+        widget.bind("<Button-5>",
+                    lambda _e: canvas.yview_scroll(1, "units"))
+
     # print-problem picker: global single-select radio list (replaces the
-    # old 打印题 table column); "" = 不设打印题
+    # old 打印题 table column); "" = 不设打印题. The radios live in a
+    # scrollable canvas because their count grows with the problem count.
     print_frame = ttk.LabelFrame(pside, text="打印题")
     print_frame.pack(fill="x", pady=(4, 0))
+    print_row = ttk.Frame(print_frame)
+    print_row.pack(fill="both", expand=True)
+    print_canvas = tk.Canvas(print_row, height=180, highlightthickness=0)
+    print_canvas.pack(side="left", fill="both", expand=True)
+    print_scroll = ttk.Scrollbar(print_row, orient="vertical",
+                                 command=print_canvas.yview)
+    print_scroll.pack(side="right", fill="y")
+    print_canvas.configure(yscrollcommand=print_scroll.set)
+    print_inner = ttk.Frame(print_canvas)
+    print_win = print_canvas.create_window((0, 0), window=print_inner,
+                                           anchor="nw")
+    print_inner.bind(
+        "<Configure>",
+        lambda _e: print_canvas.configure(
+            scrollregion=print_canvas.bbox("all")))
+    print_canvas.bind(
+        "<Configure>",
+        lambda e: print_canvas.itemconfig(print_win, width=e.width))
+    _bind_mousewheel(print_canvas, print_canvas)
+    _bind_mousewheel(print_inner, print_canvas)
 
     # ---------------- Tab 2: team groups ----------------
     tframe = ttk.Frame(notebook)
@@ -861,6 +912,9 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
     ttk.Label(edit_bar, text="（双击 / 回车 也可编辑所选队伍）",
               foreground="#666").pack(side="left", padx=8)
     ttree.pack(side="left", fill="both", expand=True)
+    tscroll = ttk.Scrollbar(left, orient="vertical", command=ttree.yview)
+    tscroll.pack(side="right", fill="y")
+    ttree.configure(yscrollcommand=tscroll.set)
 
     # sortable header columns (Treeview #2..#6); "#" (ordinal) is a plain
     # position counter, not a sort target. Clicking a heading sorts asc,
@@ -945,12 +999,17 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
     ttree.bind("<Return>", lambda _e: edit_team())
 
     ttk.Label(right, text="已定义分组").pack(anchor="w")
-    gtree = ttk.Treeview(right, columns=("id", "name"), show="headings",
+    gbox = ttk.Frame(right)
+    gbox.pack(fill="x", pady=4)
+    gtree = ttk.Treeview(gbox, columns=("id", "name"), show="headings",
                          height=8, selectmode="browse")
     for col, text, width in (("id", "ID", 50), ("name", "名称", 200)):
         gtree.heading(col, text=text)
         gtree.column(col, width=width, anchor="w")
-    gtree.pack(fill="x", pady=4)
+    gtree.pack(side="left", fill="both", expand=True)
+    gscroll = ttk.Scrollbar(gbox, orient="vertical", command=gtree.yview)
+    gscroll.pack(side="right", fill="y")
+    gtree.configure(yscrollcommand=gscroll.set)
 
     # combo must exist BEFORE refresh_groups (refresh_groups writes to
     # combo["values"]); created here to avoid a NameError on the first call
