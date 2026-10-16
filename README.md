@@ -107,8 +107,8 @@ uv sync
 ## 开发
 
 - 测试：`uv run python -B -m pytest -q -p no:cacheprovider`。
-- 
-- 规范：ICPC Contest API 2026-01（https://ccs-specs.icpc.io/2026-01/）；实现说明见 `docs/superpowers/specs/`。
+
+- 规范：[ICPC Contest API 2026-01](https://ccs-specs.icpc.io/2026-01/)；实现说明见 `docs/superpowers/specs/`。
 
 ## 相关项目与致谢
 
