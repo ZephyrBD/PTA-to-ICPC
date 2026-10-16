@@ -442,6 +442,34 @@ def test_v4_balloons_tied_times_stable_order(tmp_path):
     assert [b["problem"] for b in body] == ["A", "B"]
 
 
+def test_v4_balloons_excludes_inactive_entry(tmp_path):
+    """A pair that leaves the first-AC set keeps its id/state internally but
+    is filtered out of both the full and todo balloon lists, and the row
+    shape is unchanged."""
+    store = Store()
+    with_d25 = V4_SUBS + [
+        {"id": "4", "submit_time": "2023/05/21 09:35:00", "status": "答案正确",
+         "team_id": "D25", "team_name": "四队", "problem_index": "A",
+         "language": "cpp"}]
+    store.apply_all(translate("c1", V4_MANUAL, with_d25, V4_PROBLEMS, None, NOW))
+    c = TestClient(create_app(store, poller=None, contest_id="c1",
+                              balloon_state=BalloonState(tmp_path / "balloons.json")))
+    ids = [b["balloonid"] for b in
+           c.get("/api/v4/contests/c1/balloons").json()]
+    assert 4 in ids  # D25-A minted (the 4th, latest first-AC)
+    # D25-A's AC drops out of the snapshot → marked inactive, not deleted
+    store.apply_all(translate("c1", V4_MANUAL, V4_SUBS, V4_PROBLEMS, None, NOW))
+    full = c.get("/api/v4/contests/c1/balloons").json()
+    todo = c.get("/api/v4/contests/c1/balloons?todo=true").json()
+    assert 4 not in [b["balloonid"] for b in full]
+    assert 4 not in [b["balloonid"] for b in todo]
+    # response shape is unchanged (no stray "active" key leaked)
+    assert set(full[0]) == {
+        "balloonid", "time", "problem", "contestproblem", "team", "teamid",
+        "location", "affiliation", "affiliationid", "category", "categoryid",
+        "total", "done"}
+
+
 # --- unified /api/v4/ surface (spec 2026-10-15-v4-unify-design) ------------
 
 

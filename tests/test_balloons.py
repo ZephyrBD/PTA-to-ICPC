@@ -346,20 +346,71 @@ def test_sync_idempotent_no_resync(tmp_path):
     assert sorted(entries) == [1, 2, 3, 4, 5]
 
 
-def test_sync_prunes_lost_first_ac(tmp_path):
+def test_lost_first_ac_kept_inactive(tmp_path):
     path = tmp_path / "balloons.json"
     state = BalloonState(path)
 
     async def go():
         await state.sync(make_data())
-        # drop D25's AC → ("D25", "A") is no longer first-AC
+        # drop D25's AC → ("D25", "A") leaves the first-AC set
         subs = [s for s in SUBS if s["id"] != "6"]
-        data2 = translate("c1", MANUAL, subs, PROBLEMS, ROSTER, NOW)
-        await state.sync(data2)
+        await state.sync(translate("c1", MANUAL, subs, PROBLEMS, ROSTER, NOW))
         return await state.snapshot_entries()
 
     entries = asyncio.run(go())
-    assert set(entries) == {1, 2, 3, 5}  # 4 (D25-A) pruned
+    assert set(entries) == {1, 2, 3, 5}  # id 4 (D25-A) is not rendered
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["entries"]["4"]["active"] is False  # kept, merely inactive
+    assert raw["next_id"] == 6  # no id burned
+
+
+def test_lost_then_returning_pair_reuses_id_and_done(tmp_path):
+    path = tmp_path / "balloons.json"
+    state = BalloonState(path)
+
+    async def go():
+        await state.sync(make_data())
+        assert await state.set_done(4, True) is True  # D25-A delivered
+        subs = [s for s in SUBS if s["id"] != "6"]
+        await state.sync(translate("c1", MANUAL, subs, PROBLEMS, ROSTER, NOW))
+        await state.sync(make_data())  # D25-A returns
+        return await state.snapshot_entries()
+
+    entries = asyncio.run(go())
+    assert set(entries) == {1, 2, 3, 4, 5}
+    assert entries[4]["team_id"] == "D25" and entries[4]["problem_id"] == "A"
+    assert entries[4]["done"] is True  # 已送达 survives the blip
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["entries"]["4"]["active"] is True
+    assert raw["next_id"] == 6  # original id reused, none burned
+
+
+def test_vanish_return_cycle_never_burns_ids(tmp_path):
+    path = tmp_path / "balloons.json"
+    state = BalloonState(path)
+    no_d25 = [s for s in SUBS if s["id"] != "6"]
+
+    async def go():
+        await state.sync(make_data())
+        seen = []
+        for _ in range(3):
+            await state.sync(
+                translate("c1", MANUAL, no_d25, PROBLEMS, ROSTER, NOW))
+            # asserted per half-cycle: an id burned mid-cycle and later
+            # "re-stabilised" would slip past a final-only assertion
+            gone = await state.snapshot_entries()
+            assert sorted(gone) == [1, 2, 3, 5]
+            assert json.loads(path.read_text(encoding="utf-8"))["next_id"] == 6
+            await state.sync(make_data())
+            back = await state.snapshot_entries()
+            assert sorted(back) == [1, 2, 3, 4, 5]
+            assert back[4]["team_id"] == "D25" and back[4]["problem_id"] == "A"
+            assert json.loads(path.read_text(encoding="utf-8"))["next_id"] == 6
+            seen.append(sorted(back))
+        return seen
+
+    cycles = asyncio.run(go())
+    assert cycles == [[1, 2, 3, 4, 5]] * 3
 
 
 def test_done_undone_persist_across_reload(tmp_path):
@@ -446,10 +497,59 @@ def test_next_id_clamped_above_existing_entries(tmp_path):
     assert entries[15]["team_id"] == "D27"         # newest minted, > 10
 
 
+def test_old_format_file_without_active_is_active(tmp_path):
+    """A file written before ``active`` existed loads losslessly: every
+    entry is treated as active, and the next persist stamps ``active``."""
+    path = tmp_path / "balloons.json"
+    path.write_text(json.dumps({
+        "next_id": 2,
+        "entries": {"1": {"team_id": "D22", "problem_id": "A",
+                          "done": False}},
+    }), encoding="utf-8")
+    state = BalloonState(path)
+    assert list(asyncio.run(state.snapshot_entries())) == [1]
+    asyncio.run(state.sync(make_data()))
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["entries"]["1"]["active"] is True
+
+
+def test_explicitly_inactive_entry_hidden_and_persisted(tmp_path):
+    path = tmp_path / "balloons.json"
+    path.write_text(json.dumps({
+        "next_id": 2,
+        "entries": {"1": {"team_id": "D22", "problem_id": "A",
+                          "done": False, "active": False}},
+    }), encoding="utf-8")
+    state = BalloonState(path)
+    assert asyncio.run(state.snapshot_entries()) == {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["entries"]["1"]["active"] is False  # still present in file
+    # still inactive after a reload
+    assert asyncio.run(BalloonState(path).snapshot_entries()) == {}
+
+
+def test_inactive_id_not_reused_for_new_pair(tmp_path):
+    path = tmp_path / "balloons.json"
+    path.write_text(json.dumps({
+        "next_id": 2,
+        "entries": {"1": {"team_id": "X", "problem_id": "Y",
+                          "done": False, "active": False}},
+    }), encoding="utf-8")
+    state = BalloonState(path)
+    asyncio.run(state.sync(make_data()))
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["entries"]["1"] == {"team_id": "X", "problem_id": "Y",
+                                   "done": False, "active": False}
+    # the freshly minted pair took the next id, never the inactive one
+    assert raw["entries"]["2"]["team_id"] == "D22"
+    assert raw["entries"]["2"]["problem_id"] == "A"
+
+
 def test_duplicate_pair_file_keeps_first(tmp_path):
     """A hand-edited/corrupt file with two balloonids for the same
-    (team, problem) keeps only the first at load — never rendered twice
-    (review F1)."""
+    (team, problem) keeps BOTH entries — deleting one would orphan the
+    consumer's row for that id — but only the canonical (smallest) id is
+    rendered (review F1)."""
     path = tmp_path / "balloons.json"
     path.write_text(json.dumps({
         "next_id": 3,
@@ -460,8 +560,30 @@ def test_duplicate_pair_file_keeps_first(tmp_path):
     }), encoding="utf-8")
     state = BalloonState(path)
     entries = asyncio.run(state.snapshot_entries())
-    assert list(entries) == [1]
+    assert list(entries) == [1]  # only the canonical id renders
     assert entries[1]["done"] is False
+    # any persist must rewrite every entry, not just the canonical one
+    asyncio.run(state.set_done(1, True))
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert set(raw["entries"]) == {"1", "2"}
+
+
+def test_duplicate_pair_renders_lowest_active_id(tmp_path):
+    """Sharp edge: the lowest id of a duplicated pair is inactive while a
+    higher one is active → the active row still renders, exactly once."""
+    path = tmp_path / "balloons.json"
+    path.write_text(json.dumps({
+        "next_id": 3,
+        "entries": {
+            "1": {"team_id": "D22", "problem_id": "A", "done": True,
+                  "active": False},
+            "2": {"team_id": "D22", "problem_id": "A", "done": False,
+                  "active": True},
+        },
+    }), encoding="utf-8")
+    entries = asyncio.run(BalloonState(path).snapshot_entries())
+    assert list(entries) == [2]
+    assert entries[2]["done"] is False
 
 
 def test_sync_skips_unresolvable_problem(tmp_path):

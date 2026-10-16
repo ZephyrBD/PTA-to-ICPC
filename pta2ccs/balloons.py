@@ -250,19 +250,32 @@ def time_sort_key(iso) -> dt.datetime:
 
 
 class BalloonState:
-    """Persisted (balloonid, team_id, problem_id, done) rows in
+    """Persisted (balloonid, team_id, problem_id, done, active) rows in
     balloons.json (cwd, same convention as print_sent.json). Shape:
     {"next_id": int, "entries": {balloonid: {"team_id", "problem_id",
-    "done"}}}. Loads tolerantly — a missing/corrupt file is an empty
-    state with a warning, never an exception."""
+    "done", "active"}}}.
+
+    Records are append-only: an entry is never deleted and an id is never
+    reused nor renumbered. A pair that temporarily leaves the first-AC set
+    is merely marked ``active: false``; when it returns it keeps its
+    original id and ``done`` flag. This keeps the balloon id stable for
+    consumers that key on it — xcpc-tools upserts every balloon into its
+    own ``balloon.db`` by ``balloonid`` — so a snapshot blip or a deleted
+    balloons.json can neither orphan their rows nor resurrect a delivered
+    balloon. The file therefore grows with the number of distinct pairs
+    ever seen (bounded by that) — an intentional trade for stable ids.
+
+    Loads tolerantly — a missing/corrupt file is an empty state with a
+    warning, never an exception; entries written before ``active`` existed
+    are treated as active (lossless upgrade)."""
 
     def __init__(self, path: Path | str = Path("balloons.json")):
         self._path = Path(path)
         self._lock = asyncio.Lock()
         self._next_id = 1
         self._entries: dict[int, dict] = {}
-        # (team_id, problem_id) → balloonid reverse index for O(1)
-        # add/prune during sync; built at load, maintained by sync.
+        # (team_id, problem_id) → canonical balloonid reverse index for
+        # O(1) lookup during sync; built at load, maintained by sync.
         self._by_pair: dict[tuple[str, str], int] = {}
         self._load()
 
@@ -301,20 +314,23 @@ class BalloonState:
                 "team_id": team_id,
                 "problem_id": problem_id,
                 "done": bool(entry.get("done", False)),
+                # pre-active files: every row was live → default True
+                "active": bool(entry.get("active", True)),
             }
         self._entries = entries
         # next_id must never collide with an existing balloon id
         self._next_id = max(next_id, (max(entries) + 1 if entries else 1))
-        # first-wins reverse index; a duplicate (team, problem) pair in a
-        # hand-edited/corrupt file is dropped from _entries so it can never
-        # be rendered as a second balloon row (review F1).
+        # canonical id per (team, problem) pair = the smallest id (ascending
+        # scan, first wins). A duplicate pair in a hand-edited/corrupt file
+        # is NOT dropped: every entry is kept so a consumer's row for the
+        # losing id still resolves, and only the canonical id is rendered by
+        # snapshot_entries (review F1).
         self._by_pair: dict[tuple[str, str], int] = {}
-        for bid, e in list(entries.items()):
+        for bid in sorted(entries):
+            e = entries[bid]
             pair = (e["team_id"], e["problem_id"])
-            if pair in self._by_pair:
-                del self._entries[bid]
-                continue
-            self._by_pair[pair] = bid
+            if pair not in self._by_pair:
+                self._by_pair[pair] = bid
 
     def _persist(self) -> None:
         """Write balloons.json (tmp + replace atomic write; failure only
@@ -331,17 +347,23 @@ class BalloonState:
             log.warning("cannot write %s: %s", self._path, e)
 
     async def sync(self, data: ContestData) -> None:
-        """Reconcile entries with the snapshot's first-AC set: prune pairs
-        that are no longer first-AC and mint balloons (done False) for
-        missing pairs in submission-time ascending order. Persists only
-        when something changed."""
+        """Reconcile entries with the snapshot's first-AC set. A pair that
+        is no longer first-AC is marked inactive — never deleted, and its
+        id is never reused; a pair that (re)appears keeps its existing id
+        and ``done`` flag. Missing pairs are minted (done False, active
+        True) in submission-time ascending order. Persists only when
+        something changed."""
         pairs = first_ac_pairs(data)
         async with self._lock:
             changed = False
-            for (team_id, problem_id), bid in list(self._by_pair.items()):
-                if (team_id, problem_id) not in pairs:
-                    del self._entries[bid]
-                    del self._by_pair[(team_id, problem_id)]
+            # flip active on EVERY entry (duplicate ids included) so a
+            # temporarily-lost pair is only deactivated, never renumbered.
+            # Append-only: nothing is ever removed, so the file size is
+            # bounded by the number of distinct pairs ever seen.
+            for entry in self._entries.values():
+                want = (entry["team_id"], entry["problem_id"]) in pairs
+                if entry["active"] != want:
+                    entry["active"] = want
                     changed = True
             missing = [(key, val) for key, val in pairs.items()
                        if key not in self._by_pair
@@ -356,7 +378,7 @@ class BalloonState:
                 self._next_id += 1
                 self._entries[bid] = {"team_id": team_id,
                                       "problem_id": problem_id,
-                                      "done": False}
+                                      "done": False, "active": True}
                 self._by_pair[(team_id, problem_id)] = bid
                 changed = True
             if changed:
@@ -376,7 +398,22 @@ class BalloonState:
             return True
 
     async def snapshot_entries(self) -> dict[int, dict]:
-        """Copy of the current entries (balloonid → entry) for route
-        rendering, taken under the lock so it never observes a torn state."""
+        """Active, canonical entries (balloonid → entry) for route
+        rendering, taken under the lock so it never observes a torn state.
+
+        Inactive entries are excluded, and a pair with more than one id
+        (only possible in a hand-edited file) renders exactly once: its
+        lowest ACTIVE id wins. The returned entry keeps the historical
+        ``{"team_id", "problem_id", "done"}`` shape — no ``active`` — so
+        callers/consumers are unaffected by the added bookkeeping."""
         async with self._lock:
-            return {bid: dict(e) for bid, e in self._entries.items()}
+            chosen: dict[tuple[str, str], int] = {}
+            for bid in sorted(self._entries):  # lowest id wins per pair
+                e = self._entries[bid]
+                if not e["active"]:
+                    continue
+                chosen.setdefault((e["team_id"], e["problem_id"]), bid)
+            return {bid: {"team_id": self._entries[bid]["team_id"],
+                          "problem_id": self._entries[bid]["problem_id"],
+                          "done": self._entries[bid]["done"]}
+                    for bid in sorted(chosen.values())}

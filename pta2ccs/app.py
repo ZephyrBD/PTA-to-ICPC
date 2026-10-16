@@ -194,6 +194,9 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
                 continue
             total_map.setdefault(team_id, {})[cp["label"]] = cp
         rows = []
+        # snapshot_entries() already excludes inactive rows (a pair that
+        # temporarily left the first-AC set keeps its id but is hidden), so
+        # no extra filter is needed here.
         for bid, entry in (await balloon_state.snapshot_entries()).items():
             team_id = entry["team_id"]
             problem_id = entry["problem_id"]
