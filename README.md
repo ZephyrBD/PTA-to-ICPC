@@ -1,6 +1,6 @@
 # PTA to ICPC
 
-![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-0078D6) ![platform](https://img.shields.io/badge/platform-Linux-FCC624) ![platform](https://img.shields.io/badge/platform-macOS-000000) ![tests](https://img.shields.io/badge/tests-513%20passed-brightgreen)
+![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-0078D6) ![platform](https://img.shields.io/badge/platform-Linux-FCC624) ![platform](https://img.shields.io/badge/platform-macOS-000000) ![tests](https://img.shields.io/badge/tests-550%20passed-brightgreen)
 
 把 PTA 上可见的比赛数据转译为 ICPC Contest API 转接服务，供 ICPC Tools 与 Hydro/xcpc-tools 使用。
 
@@ -27,7 +27,7 @@ PTA 官方提供稳定的 Contest API 的付费服务，正式赛事请直接采
 - **持久化缓存**：每轮成功轮询后把快照写入 `manual/cache/state.json`（节流 + 原子写），重启时先服务未过期快照再增量刷新——重启即就绪，不再全量重拉详情、消除 429 尖峰（TTL / 开关可配）。
 - **纯只读**：无任何写回 PTA 的端点，`capabilities` 为空。
 - **HTTP Basic 认证**：`/api/v4/` 支持 HTTP Basic 认证（用户名固定 `admin`，密码由 setup 随机生成、可在「比赛设置」tab 改）；`/healthz` 与本机自检保持开放。
-- **统一日志**：服务与 setup 的运行日志（含 uvicorn 启动与访问日志）按同一格式同时写入 stderr 与 `manual/pta2icpc.log`（5 MB × 3 大小轮转）。
+- **统一日志**：服务与 setup 的运行日志（含 uvicorn 启动与访问日志）按同一布局同时写入 stderr 与 `manual/pta2icpc.log`（5 MB × 3 大小轮转）；控制台为彩色（xcpc-tools 风格、级别色标签），日志文件为纯文本。
 
 ## 架构与数据流
 
@@ -97,7 +97,7 @@ uv sync
 | `docs/api.md`             | `/api/v4/` 端点、事件流与定稿、气球契约     |
 | `docs/data-and-setup.md`  | 数据来源与覆盖、setup GUI、打印流水线、语言 id |
 | `docs/troubleshooting.md` | 常见问题                          |
-| `docs/superpowers/specs/` | 设计文档（7 篇）                     |
+| `docs/superpowers/specs/` | 设计文档（8 篇）                     |
 
 ## 开发
 

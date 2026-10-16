@@ -55,7 +55,11 @@
 
 服务与 setup GUI 两个入口共用同一套日志配置（`pta2icpc/logging_config.py`），同一格式写到 **stderr** 与 **`manual/pta2icpc.log`**（`pta2icpc-diag` 是 stdlib-only 只读诊断，报表走 stdout，不写日志文件）：
 
-- 格式：`%(asctime)s %(levelname)-8s %(name)s: %(message)s`，时间 `%Y-%m-%d %H:%M:%S`（例：`2026-10-16 15:12:33 INFO     pta2icpc.poller: restored 42 submissions from cache`）。
+- 布局：`{dd} {hh:mm:ss} {短名:>9} [{X}] {消息}`，时间 `%d %H:%M:%S`（例：`16 15:12:33    poller [I] restored 42 submissions from cache`）。`X` 是级别首字母：`D`ebug / `I`nfo / `W`arning / `E`rror / `C`ritical。
+- **控制台彩色**（xcpc-tools 风格，方案 B）：时间戳灰、名字与消息不上色、级别标签按级别上色（DEBUG 灰、INFO 青、WARNING 黄、ERROR 红、CRITICAL 亮红加粗）。非 TTY、设置 `NO_COLOR` / `PTA2ICPC_NO_COLOR`、或 Windows 控制台不支持 VT 时自动去色。
+- **日志文件为纯文本**：与控制台同一布局，但**绝不含任何 ANSI 颜色码**——文件 formatter 从不上色，且消息里的裸 `ESC` 控制字符会被清除（防止含控制字节的请求路径污染日志文件或控制台）。
+- **短名映射**（集中在 `logging_config.py`）：`pta2icpc.pta.client`→`pta`、`pta2icpc.logging_config`→`logging`、`pta2icpc.__main__`→`main`、`pta2icpc.init`→`init`、`uvicorn`/`uvicorn.error`→`server`、`uvicorn.access`→`access`，其余 `pta2icpc.<x>` 显示为 `<x>`（如 `poller`/`balloons`），未匹配的名字原样显示。
+- 名字右对齐到 9 列（超过 9 字符不截断）；多行消息按可见前缀宽度续行缩进。
 - 默认级别 `INFO`；uvicorn 的启动日志与访问日志（每条请求一行）也走同一格式与同一文件。
 - 轮转：单文件 5 MB、保留 3 份备份（`pta2icpc.log` → `pta2icpc.log.1` …）。
 

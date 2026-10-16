@@ -25,7 +25,7 @@
 ## 布局不变量
 
 - `pta2icpc/paths.py` 是**唯一**路径来源，路径**不可配置**：不得复活 `Settings.manual_dir`，不得新增 CLI / 环境变量覆盖。
-- 日志统一由 `pta2icpc/logging_config.py` 配置（格式 / stderr + `manual/pta2icpc.log` 轮转），只有入口 `main()` 调用 `configure_logging`；模块内**不得** `basicConfig` / 用 `print` 记日志（`config error:` / `connection not configured …` 等经 `log.error`），也不得新增日志路径 / 级别开关（`LOG_FILE` 固定为 `paths.LOG_FILE`；`diag_balloons.py` 例外：stdlib-only、无 logger、报表走 stdout）。
+- 日志统一由 `pta2icpc/logging_config.py` 配置（formatter 集中在 `LogFormatter`：控制台彩色、文件纯文本、短名映射集中于此；stderr + `manual/pta2icpc.log` 轮转），只有入口 `main()` 调用 `configure_logging`；启动横幅经 `banner()` 走 `console_only`（仅控制台、绝不落盘）；模块内**不得** `basicConfig` / 用 `print` 记日志（`config error:` / `connection not configured …` 等经 `log.error`），也不得新增日志路径 / 级别开关（`LOG_FILE` 固定为 `paths.LOG_FILE`；`diag_balloons.py` 例外：stdlib-only、无 logger、报表走 stdout）。
 - `load_manual` 只 glob 并合并 `manual/contest/*.json`；`manual/config/config.json` **不参与** manual 覆盖合并。
 
 ## 关键契约（改这些代码前必读）
@@ -42,7 +42,7 @@
 
 ## 参考材料
 
-- `docs/superpowers/specs/*`（设计文档，7 篇）。
+- `docs/superpowers/specs/*`（设计文档，8 篇）。
 - 工作区根：`docs/contest-api.md`（Contest API 2026-01 摘录，**仓外**）。
 - 工作区根：`参考项目/`（上游 PTA_BALL 克隆，只读参考）。
 - 致谢 / 参考：[ICPC Contest API 2026-01](https://ccs-specs.icpc.io/2026-01/)、[ICPC Tools](https://github.com/icpctools/icpctools)（[CDS](https://tools.icpc.global/cds/)）、[DOMjudge](https://github.com/DOMjudge/domjudge)（[官网](https://www.domjudge.org/)）、[Hydro/xcpc-tools](https://github.com/hydro-dev/xcpc-tools)、[laobuzhang/PTA_BALL](https://github.com/laobuzhang/PTA_BALL)。

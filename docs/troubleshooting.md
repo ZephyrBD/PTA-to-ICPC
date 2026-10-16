@@ -6,9 +6,9 @@
 
 **用途**：服务与 setup 入口的运行日志（含 uvicorn 启动与访问日志）统一写到 `manual/pta2icpc.log`，同时打到 stderr。排查问题时先看这个文件。（`pta2icpc-diag` 是 stdlib-only 的只读诊断，报表走 stdout，**不**写日志文件。）
 
-**格式**：每行 `YYYY-MM-DD HH:MM:SS LEVEL    logger: message`（例 `2026-10-16 15:12:33 INFO     pta2icpc.poller: restored 42 submissions from cache`）。`pta2icpc.*` 是程序日志，`uvicorn.*` 是服务日志。
+**格式**：`dd hh:mm:ss 短名 [X] message`（例 `16 15:12:33    poller [I] restored 42 submissions from cache`）。控制台按级别给 `[X]` 标签上色（`I` 青 / `W` 黄 / `E` 红 / `C` 亮红加粗 / `D` 灰，时间戳灰），**日志文件为纯文本、无颜色**（同一布局）。短名见 `docs/configuration.md`（`pta2icpc.poller`→`poller`、`uvicorn.*`→`server`/`access`）。
 
-**轮转**：单文件 5 MB、保留 3 份备份（`pta2icpc.log.1` …）；级别固定 `INFO`（无 CLI / 环境变量开关）。日志文件绝不写入 PTA cookie 或 `api_password`。
+**轮转**：单文件 5 MB、保留 3 份备份（`pta2icpc.log.1` …）；级别固定 `INFO`（无 CLI / 环境变量开关；`NO_COLOR` / `PTA2ICPC_NO_COLOR` 仅关闭控制台颜色）。日志文件绝不写入 PTA cookie 或 `api_password`。
 
 ## cookie 过期
 
