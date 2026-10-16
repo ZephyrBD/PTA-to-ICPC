@@ -13,8 +13,10 @@ SETUP_GROUPS_FILE = CONTEST_DIR / "setup-groups.json"
 SETUP_TEAMS_FILE = CONTEST_DIR / "setup-teams.json"
 BALLOONS_FILE = MANUAL_DIR / "balloons.json"
 PRINT_SENT_FILE = MANUAL_DIR / "print_sent.json"
+CACHE_DIR = MANUAL_DIR / "cache"
+CACHE_FILE = CACHE_DIR / "state.json"
 
 
 def ensure_dirs() -> None:
-    for directory in (MANUAL_DIR, CONFIG_DIR, CONTEST_DIR):
+    for directory in (MANUAL_DIR, CONFIG_DIR, CONTEST_DIR, CACHE_DIR):
         directory.mkdir(parents=True, exist_ok=True)

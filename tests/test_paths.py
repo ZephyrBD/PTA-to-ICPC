@@ -28,14 +28,17 @@ def test_path_constants():
     assert paths.SETUP_TEAMS_FILE == Path("manual/contest/setup-teams.json")
     assert paths.BALLOONS_FILE == Path("manual/balloons.json")
     assert paths.PRINT_SENT_FILE == Path("manual/print_sent.json")
+    assert paths.CACHE_DIR == Path("manual/cache")
+    assert paths.CACHE_FILE == Path("manual/cache/state.json")
 
 
-def test_ensure_dirs_creates_three_dirs(tmp_path, monkeypatch):
+def test_ensure_dirs_creates_manual_dirs(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     paths.ensure_dirs()
     assert (tmp_path / "manual").is_dir()
     assert (tmp_path / "manual" / "config").is_dir()
     assert (tmp_path / "manual" / "contest").is_dir()
+    assert (tmp_path / "manual" / "cache").is_dir()
 
 
 # --- Settings / load_settings ----------------------------------------------
@@ -108,6 +111,11 @@ def test_balloon_state_default_path_persists(tmp_path, monkeypatch):
 def test_poller_default_print_sent_path_is_constant():
     sig = inspect.signature(Poller.__init__)
     assert sig.parameters["print_sent_path"].default == paths.PRINT_SENT_FILE
+
+
+def test_poller_default_cache_path_is_constant():
+    sig = inspect.signature(Poller.__init__)
+    assert sig.parameters["cache_path"].default == paths.CACHE_FILE
 
 
 def test_setup_writers_default_dir_creates_manual_contest(tmp_path,

@@ -79,6 +79,10 @@ def make_poller(config_poll_seconds: float = 0.01, *,
                 **settings_overrides) -> tuple[Poller, FakeClient, Store]:
     settings = Settings(poll_interval_seconds=0.01,
                         config_poll_seconds=config_poll_seconds,
+                        # persisted snapshot cache (task 28) has its own
+                        # isolated tests in test_cache.py; here it is off so
+                        # these pollers never read/write the default file
+                        cache_enabled=False,
                         **settings_overrides)
     client = FakeClient()
     store = Store()

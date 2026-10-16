@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 
 from .config import Settings
-from .paths import PRINT_SENT_FILE
+from .paths import CACHE_FILE, PRINT_SENT_FILE
 from .printjob import build_job, send_job
 from .pta.client import PtaAuthError, PtaClient, PtaRateLimitError
 from .pta.langs import primary_extension, std_language_id
@@ -31,6 +31,16 @@ DETAIL_CONCURRENCY = 2
 # PRINT_MAX_ATTEMPTS failed attempts (logged as an error, never retried).
 PRINT_FETCH_PER_ROUND = 5
 PRINT_MAX_ATTEMPTS = 10
+
+# persisted snapshot cache write throttle (task 28): at most one disk write
+# per this many seconds (monotonic), so a fast poll loop can't thrash the
+# cache file.
+CACHE_MIN_WRITE_INTERVAL = 10.0
+
+# detail keys attached by _fetch_details; stripped from raw_subs before the
+# cache write so the persisted rows stay un-detailed (details live in
+# `details` keyed by submission id).
+_DETAIL_KEYS = ("program", "compiler_enum", "run_results", "detail_fetched")
 
 
 def _now() -> dt.datetime:
@@ -83,7 +93,8 @@ class Poller:
     def __init__(self, client: PtaClient, store: Store, settings: Settings,
                  manual: dict, *, contest_id: str,
                  print_server: str | None = None,
-                 print_sent_path: Path | str = PRINT_SENT_FILE):
+                 print_sent_path: Path | str = PRINT_SENT_FILE,
+                 cache_path: Path | str = CACHE_FILE):
         self.client = client
         self.store = store
         self.settings = settings
@@ -124,8 +135,8 @@ class Poller:
         # caching pattern as the roster — fetched on config rounds only.
         self._last_meta: dict | None = None
         # submission_id → status at last successful detail fetch; rows
-        # whose status changed since then get re-fetched (in-memory only,
-        # no cache files — by design)
+        # whose status changed since then get re-fetched (persisted with
+        # _detail_cache so a restart does not refetch everything — task 28)
         self._detail_status: dict[str, str] = {}
         # submission_id → last successful detail payload (program /
         # compiler / run_results). fetch_submissions returns fresh row
@@ -138,6 +149,15 @@ class Poller:
         # still-unresolved verdict is worth surfacing once — dedupe on the
         # count so the message fires on entry and again only when it changes.
         self._pending_warned: int | None = None
+        # persisted snapshot cache (task 28): the last raw inputs + details
+        # are written to cache_path after a successful poll (throttled,
+        # atomic). On startup a fresh-enough cache pre-populates the store
+        # so a restart does not re-fetch every detail (429 storm).
+        self._cache_path = Path(cache_path)
+        self._cache_raw_subs: list[dict] | None = None
+        self._cache_raw_problems: list[dict] = []
+        self._cache_last_write = 0.0  # time.monotonic()
+        self._load_cache()
 
     def _set_rate_limit(self, retry_after: float) -> None:
         """Start a no-requests cooldown of `retry_after` seconds (task 14)."""
@@ -145,6 +165,134 @@ class Poller:
         self.status["rate_limited_until"] = (
             dt.datetime.now(dt.timezone.utc)
             + dt.timedelta(seconds=retry_after)).isoformat()
+
+    # ------------------------------------------------------------------ #
+    # persisted snapshot cache (task 28 — restart without a detail storm)
+    # ------------------------------------------------------------------ #
+
+    def _load_cache(self) -> None:
+        """Restore roster/meta/details + raw inputs from cache_path when
+        cache_enabled and the file is fresh, parseable, and belongs to this
+        contest. Any problem (missing, corrupt, stale, other contest,
+        disabled) is ignored with a warning — never raises."""
+        if not self.settings.cache_enabled:
+            return
+        try:
+            raw = self._cache_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            log.warning("cannot read cache %s: %s", self._cache_path, e)
+            return
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError("cache root is not an object")
+            if data.get("contest_id") != self.contest_id:
+                log.warning("ignoring cache %s: contest_id mismatch",
+                            self._cache_path)
+                return
+            when = dt.datetime.fromisoformat(str(data.get("saved_at")))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=dt.timezone.utc)
+            age = (_now() - when).total_seconds()
+            if age > self.settings.cache_ttl_seconds:
+                log.warning("ignoring cache %s: %.0fs old (ttl %.0fs)",
+                            self._cache_path, age,
+                            self.settings.cache_ttl_seconds)
+                return
+            raw_subs = data.get("raw_subs")
+            raw_problems = data.get("raw_problems")
+            raw_teams = data.get("raw_teams")
+            meta = data.get("meta")
+            details = data.get("details")
+            if not isinstance(raw_subs, list) or not isinstance(details, dict):
+                raise ValueError("cache is missing raw_subs/details")
+            self._cache_raw_subs = raw_subs
+            self._cache_raw_problems = (
+                raw_problems if isinstance(raw_problems, list) else [])
+            self._last_teams = (list(raw_teams)
+                                if isinstance(raw_teams, list) and raw_teams
+                                else None)
+            self._last_meta = meta if isinstance(meta, dict) and meta else None
+            for sid, entry in details.items():
+                if not isinstance(entry, dict):
+                    continue
+                sid = str(sid)
+                self._detail_status[sid] = entry.get("status")
+                self._detail_cache[sid] = {
+                    "program": entry.get("program"),
+                    "compiler": entry.get("compiler"),
+                    "run_results": entry.get("run_results") or [],
+                }
+            log.info("restored %d submission(s) from cache %s",
+                     len(raw_subs), self._cache_path)
+        except Exception as e:
+            # a corrupt/adversarial cache must never break startup
+            log.warning("ignoring unreadable cache %s: %s", self._cache_path, e)
+
+    async def _apply_cached_snapshot(self) -> None:
+        """Serve the restored cache as the initial snapshot: re-attach the
+        cached details (statuses match, so _fetch_details issues NO network
+        request), translate, and mark the store ready. run() calls this
+        before the first live poll when the store is still empty."""
+        raw_subs = [dict(r) for r in self._cache_raw_subs or []]
+        await self._fetch_details(raw_subs)
+        raw_problems = [dict(p) for p in self._cache_raw_problems]
+        raw_teams = (list(self._last_teams)
+                     if self._last_teams is not None else None)
+        data = translate(self.contest_id, self.manual, raw_subs, raw_problems,
+                         raw_teams, _now(), meta=self._last_meta)
+        self.store.apply_all(data)
+        self.status["ready"] = True
+        # cookie_ok is left to the first live poll: the cached snapshot is
+        # served without touching PTA, so the cookie is not yet verified.
+
+    @staticmethod
+    def _strip_details(subs: list[dict]) -> list[dict]:
+        """Persist rows un-detailed (details live under `details`)."""
+        return [{k: v for k, v in row.items() if k not in _DETAIL_KEYS}
+                for row in subs]
+
+    def _save_cache(self, raw_subs: list[dict],
+                    raw_problems: list[dict]) -> None:
+        """Persist the snapshot after a successful round, throttled to at
+        most one write per CACHE_MIN_WRITE_INTERVAL seconds and atomic
+        (tmp + replace). A throttled or failed write only warns — a lost
+        cache never fails a poll round."""
+        if not self.settings.cache_enabled:
+            return
+        now_mono = time.monotonic()
+        if now_mono - self._cache_last_write < CACHE_MIN_WRITE_INTERVAL:
+            return
+        self._cache_last_write = now_mono
+        details: dict[str, dict] = {}
+        for sid, cached in self._detail_cache.items():
+            if sid not in self._detail_status:
+                continue
+            details[sid] = {
+                "status": self._detail_status.get(sid),
+                "program": cached.get("program"),
+                "compiler": cached.get("compiler"),
+                "run_results": cached.get("run_results") or [],
+            }
+        payload = {
+            "saved_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "contest_id": self.contest_id,
+            "raw_subs": self._strip_details(raw_subs),
+            "raw_problems": raw_problems,
+            "raw_teams": self._last_teams or [],
+            "meta": self._last_meta or {},
+            "details": details,
+        }
+        tmp = self._cache_path.parent / (self._cache_path.name + ".tmp")
+        try:
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(payload, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+            tmp.replace(self._cache_path)
+        except OSError as e:
+            log.warning("cannot write cache %s: %s", self._cache_path, e)
 
     async def _fetch_details(self, raw_subs: list[dict]) -> None:
         """Attach source/run detail onto rows. Fetch (at most
@@ -475,6 +623,8 @@ class Poller:
                     and time.monotonic() >= self._rate_limit_until):
                 self._rate_limit_until = None
                 self.status["rate_limited_until"] = None
+            # persist the snapshot for the next startup (throttled/atomic)
+            self._save_cache(raw_subs, raw_problems)
         except PtaRateLimitError as e:
             # rate limiting is NOT a failure: no backoff multiplication,
             # consecutive_failures/last_success untouched; next round is
@@ -490,6 +640,15 @@ class Poller:
             log.warning("poll failed: %s", e)
 
     async def run(self) -> None:
+        # serve the restored cache before the first live poll (task 28):
+        # the store is empty at startup, so publish the cached snapshot now
+        # and let poll_once refresh it incrementally — a restart no longer
+        # re-fetches every detail at once (the 429 storm).
+        if self.store.snapshot() is None and self._cache_raw_subs is not None:
+            try:
+                await self._apply_cached_snapshot()
+            except Exception as e:
+                log.warning("cannot apply cached snapshot: %s", e)
         failures = 0
         while not self._stop.is_set():
             await self.poll_once()

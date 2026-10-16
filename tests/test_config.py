@@ -59,6 +59,39 @@ def test_rate_limit_settings_invalid_rejected(bad: dict):
         Settings(**bad)
 
 
+# --- cache / jitter settings (task 28) ------------------------------------
+
+def test_cache_jitter_settings_defaults():
+    s = Settings()
+    assert s.cache_enabled is True
+    assert s.cache_ttl_seconds == 3600.0
+    assert s.pta_request_jitter == 0.25
+
+
+def test_cache_jitter_settings_from_file(tmp_path: Path):
+    s = load_settings(make_cfg(
+        tmp_path, cache_enabled=False, cache_ttl_seconds=120.0,
+        pta_request_jitter=0.0))
+    assert s.cache_enabled is False
+    assert s.cache_ttl_seconds == 120.0
+    assert s.pta_request_jitter == 0.0
+
+
+@pytest.mark.parametrize("bad", [{"cache_ttl_seconds": 0},
+                                 {"cache_ttl_seconds": -1},
+                                 {"pta_request_jitter": -0.1},
+                                 {"pta_request_jitter": 1.5}])
+def test_cache_jitter_settings_invalid_rejected(bad: dict):
+    with pytest.raises(ValidationError):
+        Settings(**bad)
+
+
+def test_cache_jitter_settings_bounds_are_inclusive():
+    assert Settings(pta_request_jitter=0).pta_request_jitter == 0
+    assert Settings(pta_request_jitter=1).pta_request_jitter == 1
+    assert Settings(cache_ttl_seconds=0.001).cache_ttl_seconds == 0.001
+
+
 def test_load_settings_missing_file_returns_defaults(tmp_path: Path):
     assert load_settings(tmp_path / "nope.json") == Settings()
 

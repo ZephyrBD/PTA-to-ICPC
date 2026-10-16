@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import random
 import time
 
 import httpx
@@ -122,7 +123,8 @@ class PtaClient:
                  tz: str = "+08:00",
                  transport: httpx.AsyncBaseTransport | None = None,
                  page_limit: int = 50,
-                 requests_per_second: float = 2.0):
+                 requests_per_second: float = 2.0,
+                 request_jitter: float = 0.0):
         self.submissions_url = (
             f"{base_url}/api/problem-sets/{contest_id}/submissions")
         # per-submission detail (source code + per-case runs)
@@ -145,6 +147,9 @@ class PtaClient:
         # (detail_fetch_per_round=5, DETAIL_CONCURRENCY=2) + config
         # negligible — all well under the default 2.0 rps cap (task 14).
         self._min_interval = 1.0 / requests_per_second
+        # jitter fraction of min_interval added to every gate interval
+        # (0.0 = exact spacing); never shortens the spacing.
+        self._request_jitter = request_jitter
         self._gate_lock = asyncio.Lock()
         self._next_request_at = 0.0  # time.monotonic()
         # problemSetProblemId → label; refreshed by fetch_problems and by
@@ -172,7 +177,11 @@ class PtaClient:
             if wait > 0:
                 await asyncio.sleep(wait)
                 now = time.monotonic()
-            self._next_request_at = now + self._min_interval
+            interval = self._min_interval
+            if self._request_jitter > 0:
+                interval += random.uniform(
+                    0, self._request_jitter * self._min_interval)
+            self._next_request_at = now + interval
 
     async def _get_json(self, url: str, params: dict | None = None) -> dict:
         await self._rate_gate()

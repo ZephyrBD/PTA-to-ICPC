@@ -15,6 +15,9 @@
 | `pta_requests_per_second` | `2.0` | PTA 全局请求限速（每秒），必须 > 0 |
 | `detail_fetch_per_round` | `5` | 每轮提交详情拉取条数上限，必须 ≥ 0（`0` = 不拉详情） |
 | `fetch_details` | `true` | 是否拉取提交详情（`false` 是比 `detail_fetch_per_round=0` 更粗的总开关） |
+| `cache_enabled` | `true` | 是否读写持久化快照缓存（`false` = 既不读也不写） |
+| `cache_ttl_seconds` | `3600.0` | 启动时缓存超过该时长即视为过期并忽略，必须 > 0 |
+| `pta_request_jitter` | `0.25` | PTA 请求间隔抖动比例（每个间隔追加 `uniform(0, 比例 × 基础间隔)`，只增不减），取值 ∈ [0, 1] |
 
 `cookie` 与 `contest_id` **不在**这个文件里，由 setup GUI 写入 `manual/contest/setup-connection.json`。
 
@@ -30,10 +33,13 @@
 | `manual/contest/setup-teams.json` | 队伍分组指派 + `seat` / `members` / `coaches` | 队伍分组 tab | 是 |
 | `manual/balloons.json` | 气球发放状态（运行状态） | 运行时自动 | 是 |
 | `manual/print_sent.json` | 已发送打印 id（运行状态） | 运行时自动 | 是 |
+| `manual/cache/state.json` | 持久化 PTA 快照缓存（运行状态） | 运行时自动 | 是 |
 
-`manual/balloons.json.tmp`、`manual/print_sent.json.tmp` 是原子写临时文件（写入失败时可能残留）。
+`manual/balloons.json.tmp`、`manual/print_sent.json.tmp`、`manual/cache/state.json.tmp` 是原子写临时文件（写入失败时可能残留）。
 
-启动时自动创建 `manual/`、`manual/config/`、`manual/contest/`（`pta2icpc/paths.py:ensure_dirs`）。
+启动时自动创建 `manual/`、`manual/config/`、`manual/contest/`、`manual/cache/`（`pta2icpc/paths.py:ensure_dirs`）。
+
+`manual/cache/state.json` 在每轮成功轮询后节流写入（≥ 10s 一次，原子写）：内容为提交列表、配置类数据与 `(提交, 状态)` 详情。重启时若缓存未过 TTL（`cache_ttl_seconds`）且 `contest_id` 匹配，会先服务该快照再增量刷新——避免重启瞬间大量详情拉取触发 429；缓存缺失 / 损坏 / 过期 / 比赛不匹配 / `cache_enabled=false` 一律忽略（warning，不报错）。
 
 ## 路径不可配置
 

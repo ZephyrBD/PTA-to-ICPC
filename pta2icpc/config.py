@@ -19,6 +19,15 @@ class Settings(BaseModel):
     pta_requests_per_second: float = Field(default=2.0, gt=0)
     detail_fetch_per_round: int = Field(default=5, ge=0)
     fetch_details: bool = True
+    # persisted PTA snapshot cache (task 28): a restart serves the last
+    # snapshot before the first live poll instead of re-fetching every
+    # detail, which eliminates the 429 storm on restart. Disabled → the
+    # cache file is never read or written.
+    cache_enabled: bool = True
+    cache_ttl_seconds: float = Field(default=3600.0, gt=0)
+    # PTA request spacing jitter (task 28): each gate interval is extended
+    # by uniform(0, jitter * min_interval); only ever adds to the spacing.
+    pta_request_jitter: float = Field(default=0.25, ge=0, le=1)
 
 
 def _fail(msg: str) -> None:

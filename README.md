@@ -1,6 +1,6 @@
 # PTA to ICPC
 
-![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![tests](https://img.shields.io/badge/tests-442%20passed-brightgreen)
+![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![tests](https://img.shields.io/badge/tests-466%20passed-brightgreen)
 
 把 PTA (pintia.cn) 上账号已可见的比赛数据转译为 ICPC Contest API 2026-01 只读服务，供 ICPC CDS→resolver 与 xcpc-tools（气球/打印）消费。
 
@@ -23,7 +23,8 @@ PTA 官方另提供满足 Contest API 的付费服务，正式赛事建议直接
 - **气球端点**：每 (队伍, 题目) 首次 AC 一个气球，`balloonid` 只增、永不复用，供 xcpc-tools 稳定 upsert。
 - **打印流水线**：扮演 DOMjudge，把打印题提交的源码按打印脚本的 multipart 形状 POST 到 `PRINT_SERVER`。
 - **setup GUI**：一次性配置连接、题目颜色、自定义分组、打印题、座位/队员/教练、比赛时间覆盖。
-- **PTA 限流自适应**：全局请求限速 + 每轮详情预算；429 触发冷却，不拖垮整轮。
+- **PTA 限流自适应**：全局请求限速（带抖动）+ 每轮详情预算；429 触发冷却，不拖垮整轮。
+- **持久化缓存**：每轮成功轮询后把快照写入 `manual/cache/state.json`（节流 + 原子写），重启时先服务未过期快照再增量刷新——重启即就绪，不再全量重拉详情、消除 429 尖峰（TTL / 开关可配）。
 - **纯只读**：无任何写回 PTA 的端点，`capabilities` 为空。
 - **Windows 单机可跑**：绑 `127.0.0.1`，无认证。
 

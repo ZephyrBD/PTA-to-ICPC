@@ -298,7 +298,8 @@ def _make_poller(settings: Settings, conn: dict, manual: dict,
     tz = ((manual.get("contest") or {}).get("pta_timezone", "+08:00"))
     client = PtaClient("https://pintia.cn", conn["contest_id"],
                        conn["pta_cookie"], tz=tz,
-                       requests_per_second=settings.pta_requests_per_second)
+                       requests_per_second=settings.pta_requests_per_second,
+                       request_jitter=settings.pta_request_jitter)
     return Poller(client, store, settings, manual,
                   contest_id=conn["contest_id"],
                   print_server=conn.get("print_server")), tz
