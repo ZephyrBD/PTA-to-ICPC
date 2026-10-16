@@ -33,15 +33,15 @@
 
 `manual/balloons.json.tmp`、`manual/print_sent.json.tmp` 是原子写临时文件（写入失败时可能残留）。
 
-启动时自动创建 `manual/`、`manual/config/`、`manual/contest/`（`ptapatch/paths.py:ensure_dirs`）。
+启动时自动创建 `manual/`、`manual/config/`、`manual/contest/`（`pta2icpc/paths.py:ensure_dirs`）。
 
 ## 路径不可配置
 
-所有路径常量硬编码在 `ptapatch/paths.py`，**不可配置**：`Settings` 没有 `manual_dir` 之类的字段，也没有 CLI / 环境变量覆盖。设置只从固定的 `manual/config/config.json` 读取；`manual/contest/*.json` 只用于比赛覆盖合并。
+所有路径常量硬编码在 `pta2icpc/paths.py`，**不可配置**：`Settings` 没有 `manual_dir` 之类的字段，也没有 CLI / 环境变量覆盖。设置只从固定的 `manual/config/config.json` 读取；`manual/contest/*.json` 只用于比赛覆盖合并。
 
 ## 运行目录要求
 
-路径都是**相对路径**，因此所有命令必须在 `ptapatch/` 目录下运行。在别处运行会读写错误的 `manual/`。
+路径都是**相对路径**，因此所有命令必须在 `pta2icpc/` 目录下运行。在别处运行会读写错误的 `manual/`。
 
 ## 密钥
 

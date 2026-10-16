@@ -1,17 +1,17 @@
-# AGENTS.md — PTA Patch（agent 向）
+# AGENTS.md — PTA to ICPC（agent 向）
 
 面向在本仓库（自成一个 git 仓库）里工作的 agent。使用者教程见 `README.md`，细节见 `docs/`。
 
 ## 工作目录
 
-- 所有相对路径（`.venv/`、`manual/`、`ptapatch/paths.py` 的常量）都以 `ptapatch/` 为根，命令**必须**在该目录下执行。
+- 所有相对路径（`.venv/`、`manual/`、`pta2icpc/paths.py` 的常量）都以 `pta2icpc/` 为根，命令**必须**在该目录下执行。
 - 安装 / 快速开始等步骤见 `README.md`，此处不重复。
 
 ## 命令
 
 - 测试：`.venv/Scripts/python -B -m pytest -q -p no:cacheprovider`（`-B` + `-p no:cacheprovider` 避免留下 `__pycache__` / `.pytest_cache`）。
-- setup GUI：`.venv/Scripts/python -m ptapatch.setup`（**禁止在自动化里运行**）。
-- 服务：`.venv/Scripts/python -m ptapatch`（由用户自行启停，agent 不得擅自启停）。
+- setup GUI：`.venv/Scripts/python -m pta2icpc.setup`（**禁止在自动化里运行**）。
+- 服务：`.venv/Scripts/python -m pta2icpc`（由用户自行启停，agent 不得擅自启停）。
 
 ## 硬约束
 
@@ -23,7 +23,7 @@
 
 ## 布局不变量
 
-- `ptapatch/paths.py` 是**唯一**路径来源，路径**不可配置**：不得复活 `Settings.manual_dir`，不得新增 CLI / 环境变量覆盖。
+- `pta2icpc/paths.py` 是**唯一**路径来源，路径**不可配置**：不得复活 `Settings.manual_dir`，不得新增 CLI / 环境变量覆盖。
 - `load_manual` 只 glob 并合并 `manual/contest/*.json`；`manual/config/config.json` **不参与** manual 覆盖合并。
 
 ## 关键契约（改这些代码前必读）

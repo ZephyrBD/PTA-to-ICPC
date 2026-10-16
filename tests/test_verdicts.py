@@ -1,4 +1,4 @@
-from ptapatch.pta.verdicts import PTA_STATUS_NAME_MAP, PTA_STATUS_VERDICT_MAP, PTA_VERDICT_MAP
+from pta2icpc.pta.verdicts import PTA_STATUS_NAME_MAP, PTA_STATUS_VERDICT_MAP, PTA_VERDICT_MAP
 
 
 def test_known_verdicts_map_correctly():

@@ -1,11 +1,11 @@
 """Read-only balloon-state diagnostic (stdlib only, never writes files).
 
-Compares our ``balloons.json`` (the PTA Patch ``BalloonState``) with
+Compares our ``balloons.json`` (the PTA to ICPC ``BalloonState``) with
 xcpc-tools' NeDB ``balloon.db`` to surface the symptoms of balloon-id
 churn: orphan rows (their ids we no longer know), missing rows (our active
 ids they lack), pair→id disagreements and ``done`` mismatches.
 
-Run: ``python -m ptapatch.diag_balloons`` — default paths are relative to
+Run: ``python -m pta2icpc.diag_balloons`` — default paths are relative to
 the repo root. The exit code is always 0 (a diagnostic, not a gate).
 """
 
@@ -226,7 +226,7 @@ def print_report(report: dict) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description="只读诊断：对比 PTA Patch 的 balloons.json 与 "
+        description="只读诊断：对比 PTA to ICPC 的 balloons.json 与 "
                     "xcpc-tools 的 balloon.db（NeDB）")
     parser.add_argument("--balloons-json", default="manual/balloons.json",
                         help="我方气球状态文件 (默认 manual/balloons.json)")

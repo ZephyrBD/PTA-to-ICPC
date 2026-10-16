@@ -1,11 +1,11 @@
-# PTA Patch — PTA 比赛数据转 ICPC Contest API 设计文档
+# PTA to ICPC — PTA 比赛数据转 ICPC Contest API 设计文档
 
 日期：2026-10-13（设计已经用户逐节确认）
 Spec 依据：ICPC CCS **Contest API 2026-01**（https://ccs-specs.icpc.io/2026-01/ ），速记见 `docs/contest-api.md`
 
 ## 目标
 
-做一个新服务 `ptapatch/`：读取 pintia.cn 上账号已可见的比赛数据，在本机暴露一个**完整只读子集**的 Contest API 2026-01 服务器，供气球打印工具等客户端消费。替代参考项目（`参考项目/`）的 Selenium 抓取网页方案；参考项目保持不动，本期不改气球打印客户端。
+做一个新服务 `pta2icpc/`：读取 pintia.cn 上账号已可见的比赛数据，在本机暴露一个**完整只读子集**的 Contest API 2026-01 服务器，供气球打印工具等客户端消费。替代参考项目（`参考项目/`）的 Selenium 抓取网页方案；参考项目保持不动，本期不改气球打印客户端。
 
 ## 已确认的约束
 
@@ -43,11 +43,11 @@ PTA 账号可见数据 ──httpx──▶ pta/client.py ──原始JSON──
 ## 目录结构
 
 ```
-ptapatch/
+pta2icpc/
   pyproject.toml              # fastapi, uvicorn, httpx, pydantic; dev: pytest
   config.example.json
   manual.example/             # 手动补充 JSON 示例（实际 manual/ 不入库）
-  ptapatch/
+  pta2icpc/
     config.py                 # 加载/校验配置，fail fast
     models.py                 # Contest API 对象的 Pydantic 模型
     pta/client.py

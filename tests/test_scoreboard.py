@@ -1,7 +1,7 @@
 import datetime as dt
 
-from ptapatch.scoreboard import compute_scoreboard
-from ptapatch.translate import BUILTIN_JUDGEMENT_TYPES, ContestData
+from pta2icpc.scoreboard import compute_scoreboard
+from pta2icpc.translate import BUILTIN_JUDGEMENT_TYPES, ContestData
 
 TZ = dt.timezone(dt.timedelta(hours=8))
 NOW = dt.datetime(2023, 5, 21, 10, 0, 0, tzinfo=TZ)

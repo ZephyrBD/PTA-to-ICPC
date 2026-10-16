@@ -1,6 +1,6 @@
 """One-time tkinter setup GUI: problem colors + custom team groups.
 
-Run before the server starts (``python -m ptapatch.setup``). Fetches problems
+Run before the server starts (``python -m pta2icpc.setup``). Fetches problems
 and teams once from PTA, opens the GUI, writes the operator's choices into
 ``manual/contest/setup-*.json`` (auto-loaded by ``config.load_manual``), then exits.
 The server process never imports tkinter.
@@ -733,12 +733,12 @@ def launch_gui(settings: Settings, problems, teams, meta, saved,
     ui = {"combo_map": {}}
 
     root = tk.Tk()
-    root.title("PTA Patch setup — 首次运行配置")
+    root.title("PTA to ICPC setup — 首次运行配置")
     root.geometry("1000x640")
 
     def mark_dirty() -> None:
         state["dirty"] = True
-        root.title("PTA Patch setup — 首次运行配置 *")
+        root.title("PTA to ICPC setup — 首次运行配置 *")
 
     def group_display(gid: str) -> str:
         name = (group_defs.get(gid) or {}).get("name") or ""
@@ -1307,7 +1307,7 @@ def launch_gui(settings: Settings, problems, teams, meta, saved,
                            print_problem, contest_dir=contest_dir)
         write_contest_setup(payload["contest"], contest_dir=contest_dir)
         state["dirty"] = False
-        root.title("PTA Patch setup — 首次运行配置")
+        root.title("PTA to ICPC setup — 首次运行配置")
         messagebox.showinfo(
             "保存到 manual/contest",
             f"已写入 {contest_dir.as_posix()}\n"

@@ -68,7 +68,7 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
             except AttributeError:
                 pass  # client without aclose (e.g. test fakes)
 
-    app = FastAPI(title="PTA Patch", lifespan=lifespan)
+    app = FastAPI(title="PTA to ICPC", lifespan=lifespan)
     app.state.store = store
     app.state.poller = poller
     app.state.contest_id = contest_id
@@ -310,7 +310,7 @@ def _build_default_app(conn: dict | None = None) -> FastAPI:
     if conn is None:
         conn = load_connection()
         if conn is None:
-            print("connection not configured — run 'python -m ptapatch.setup' "
+            print("connection not configured — run 'python -m pta2icpc.setup' "
                   "first", file=sys.stderr)
             raise SystemExit(1)
     manual = load_manual()

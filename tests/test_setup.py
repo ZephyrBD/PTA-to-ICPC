@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-import ptapatch.setup as setup
-from ptapatch.setup import (
+import pta2icpc.setup as setup
+from pta2icpc.setup import (
     allocate_group_id,
     apply_team_edit,
     apply_team_meta,
@@ -26,7 +26,7 @@ from ptapatch.setup import (
     write_contest_setup,
     write_manual_setup,
 )
-from ptapatch.translate import _build_contest
+from pta2icpc.translate import _build_contest
 
 
 def test_import_setup_does_not_require_display():

@@ -3,13 +3,13 @@ import inspect
 import json
 from pathlib import Path
 
-from ptapatch import paths
-from ptapatch.balloons import BalloonState
-from ptapatch.config import Settings, load_manual, load_settings
-from ptapatch.poller import Poller
-from ptapatch.setup import (write_connection, write_contest_setup,
+from pta2icpc import paths
+from pta2icpc.balloons import BalloonState
+from pta2icpc.config import Settings, load_manual, load_settings
+from pta2icpc.poller import Poller
+from pta2icpc.setup import (write_connection, write_contest_setup,
                            write_manual_setup)
-from ptapatch.translate import ContestData
+from pta2icpc.translate import ContestData
 
 
 # --- path constants ---------------------------------------------------------

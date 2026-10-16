@@ -6,10 +6,10 @@ import datetime as dt
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ptapatch.app import create_app
-from ptapatch.event_feed import register  # noqa: F401  (used via create_app)
-from ptapatch.store import Store
-from ptapatch.translate import translate
+from pta2icpc.app import create_app
+from pta2icpc.event_feed import register  # noqa: F401  (used via create_app)
+from pta2icpc.store import Store
+from pta2icpc.translate import translate
 
 NOW = dt.datetime(2023, 5, 21, 10, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
 ENDED = dt.datetime(2023, 5, 21, 15, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
@@ -155,8 +155,8 @@ def test_non_numeric_since_token_400():
 
 
 def test_heartbeat_on_idle_stream(monkeypatch):
-    monkeypatch.setattr("ptapatch.event_feed.HEARTBEAT_SECONDS", 0.05)
-    monkeypatch.setattr("ptapatch.event_feed.POLL_SECONDS", 0.01)
+    monkeypatch.setattr("pta2icpc.event_feed.HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr("pta2icpc.event_feed.POLL_SECONDS", 0.01)
     _, saw_blank = asyncio.run(_stream(app_for(Store()),
                                        "/api/v4/contests/c1/event-feed",
                                        until_blank=True, timeout=2.0))

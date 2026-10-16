@@ -1,6 +1,6 @@
 [project]
-name = "ptapatch"
-version = "0.2.0"
+name = "pta2icpc"
+version = "0.3.0"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
@@ -17,4 +17,4 @@ requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["ptapatch*"]
+include = ["pta2icpc*"]

@@ -1,4 +1,4 @@
-# PTA Patch
+# PTA to ICPC
 
 ![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![tests](https://img.shields.io/badge/tests-442%20passed-brightgreen)
 
@@ -31,16 +31,16 @@ PTA 官方另提供满足 Contest API 的付费服务，正式赛事建议直接
 
 ```mermaid
 flowchart LR
-  PTA["PTA 接口"] -->|轮询拉取| P["PTA Patch"]
+  PTA["PTA 接口"] -->|轮询拉取| P["PTA to ICPC"]
   P -->|Contest API /api/v4| CDS["ICPC CDS"]
   CDS -->|event-feed| R["ICPC resolver"]
   P -->|/balloons + 打印| X["Hydro/xcpc-tools"]
 ```
 
-- PTA → PTA Patch：带 PTA cookie 轮询拉取提交/题目/队伍，翻译成 Contest API 对象并缓存。
-- PTA Patch → CDS：CDS 以 `RESTContestSource` 消费 `/api/v4/` 并镜像事件流。
+- PTA → PTA to ICPC：带 PTA cookie 轮询拉取提交/题目/队伍，翻译成 Contest API 对象并缓存。
+- PTA to ICPC → CDS：CDS 以 `RESTContestSource` 消费 `/api/v4/` 并镜像事件流。
 - CDS → resolver：定稿后 CDS 正常结束下载，resolver 无需 `--test` 即可运行。
-- PTA Patch → Hydro/xcpc-tools：消费 `/balloons`（气球发放）与打印流水线。
+- PTA to ICPC → Hydro/xcpc-tools：消费 `/balloons`（气球发放）与打印流水线。
 
 ## 环境要求
 
@@ -59,9 +59,9 @@ python -m venv .venv
 
 ## 快速开始
 
-1. **首次配置**：`.venv/Scripts/python -m ptapatch.setup` —— 一次性 GUI。首次弹出「比赛连接」对话框填 `contest_id` + PTA cookie（可选打印服务器 URL；比赛中要改可点顶栏「🔗 比赛连接…」）；再设置题目颜色 / 自定义分组 / 打印题 / 座位·队员·教练 / 比赛时间覆盖，保存后写出 `manual/contest/setup-*.json`。可重复运行。
+1. **首次配置**：`.venv/Scripts/python -m pta2icpc.setup` —— 一次性 GUI。首次弹出「比赛连接」对话框填 `contest_id` + PTA cookie（可选打印服务器 URL；比赛中要改可点顶栏「🔗 比赛连接…」）；再设置题目颜色 / 自定义分组 / 打印题 / 座位·队员·教练 / 比赛时间覆盖，保存后写出 `manual/contest/setup-*.json`。可重复运行。
 
-2. **启动服务**：在 `ptapatch/` 目录下 `.venv/Scripts/python -m ptapatch`（没有模块级 `app`，不能用 `uvicorn ptapatch.app:app`）。
+2. **启动服务**：在 `pta2icpc/` 目录下 `.venv/Scripts/python -m pta2icpc`（没有模块级 `app`，不能用 `uvicorn pta2icpc.app:app`）。
 
 3. **自检**：`curl http://127.0.0.1:8000/healthz`、`curl http://127.0.0.1:8000/api/v4/`。
 
@@ -70,7 +70,7 @@ python -m venv .venv
    CDS `ccsConfig.xml` 里的 `<ccs>` 元素：
    
    ```xml
-   <ccs url="http://127.0.0.1:8000/api/v4/contests/<contest_id>" user="ptapatch" password="none"/>
+   <ccs url="http://127.0.0.1:8000/api/v4/contests/<contest_id>" user="pta2icpc" password="none"/>
    ```
    
    xcpc-tools `config.server.yaml`：
@@ -88,7 +88,7 @@ python -m venv .venv
 { "host": "127.0.0.1", "port": 8000 }
 ```
 
-字段表与目录布局见 `docs/configuration.md`。所有命令必须在 `ptapatch/` 目录下运行（路径为相对路径）。
+字段表与目录布局见 `docs/configuration.md`。所有命令必须在 `pta2icpc/` 目录下运行（路径为相对路径）。
 
 ## 文档
 
@@ -100,12 +100,12 @@ python -m venv .venv
 | `docs/troubleshooting.md`  | 常见问题                          |
 | `docs/superpowers/specs/`  | 设计文档（5 篇）                     |
 
-设计文档：`docs/superpowers/specs/2026-10-13-ptapatch-design.md`、`2026-10-15-print-domjudge-design.md`、`2026-10-15-domjudge-balloons-design.md`、`2026-10-15-v4-unify-design.md`、`2026-10-15-cds-finalize-design.md`。
+设计文档：`docs/superpowers/specs/2026-10-13-pta2icpc-design.md`、`2026-10-15-print-domjudge-design.md`、`2026-10-15-domjudge-balloons-design.md`、`2026-10-15-v4-unify-design.md`、`2026-10-15-cds-finalize-design.md`。
 
 ## 开发
 
 - 测试：`.venv/Scripts/python -B -m pytest -q -p no:cacheprovider`（`-B -p no:cacheprovider` 避免留下 `__pycache__`/`.pytest_cache`）。
-- 项目结构：`ptapatch/`（服务：`app`/`config`/`paths`/`poller`/`store`/`translate`/`scoreboard`/`event_feed`/`balloons`/`printjob`/`models`/`timefmt`/`setup`/`diag_balloons` + `pta/` 子包）、`tests/`（pytest，逐模块对应）。
+- 项目结构：`pta2icpc/`（服务：`app`/`config`/`paths`/`poller`/`store`/`translate`/`scoreboard`/`event_feed`/`balloons`/`printjob`/`models`/`timefmt`/`setup`/`diag_balloons` + `pta/` 子包）、`tests/`（pytest，逐模块对应）。
 - 规范：ICPC Contest API 2026-01（https://ccs-specs.icpc.io/2026-01/）；实现说明见 `docs/superpowers/specs/`。
 
 ## 相关项目与致谢

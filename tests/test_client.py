@@ -8,8 +8,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ptapatch.models import sanitize_id
-from ptapatch.pta.client import (
+from pta2icpc.models import sanitize_id
+from pta2icpc.pta.client import (
     COMPILER_LANGUAGES,
     PtaAuthError,
     PtaClient,
@@ -447,7 +447,7 @@ def test_fetch_teams_normalizes_roster():
 
 def test_fetch_teams_warns_on_truncated_roster(caplog):
     """total=60 but pages stop early → roster truncation warning
-    (logger ptapatch.pta.client)."""
+    (logger pta2icpc.pta.client)."""
     payload = load_members()
     pool = payload["members"][:40]
     page_size = 20
@@ -458,7 +458,7 @@ def test_fetch_teams_warns_on_truncated_roster(caplog):
         return httpx.Response(200, json=dict(
             payload, total=60, members=pool[start:start + page_size]))
 
-    with caplog.at_level(logging.WARNING, logger="ptapatch.pta.client"):
+    with caplog.at_level(logging.WARNING, logger="pta2icpc.pta.client"):
         teams = fetch_teams(make_client(handle, page_limit=page_size))
     assert len(teams) == 40
     assert any("truncated" in rec.message and "40" in rec.message
@@ -524,7 +524,7 @@ def test_fetch_teams_skips_member_without_any_id(caplog):
     def handle(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payload)
 
-    with caplog.at_level(logging.WARNING, logger="ptapatch.pta.client"):
+    with caplog.at_level(logging.WARNING, logger="pta2icpc.pta.client"):
         teams = fetch_teams(make_client(handle))
     assert [t["id"] for t in teams] == ["s2"]
     assert not any(t["id"] == "None" for t in teams)

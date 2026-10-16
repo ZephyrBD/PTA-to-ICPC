@@ -17,7 +17,7 @@
 
 `config.load_manual` 只 glob 并合并 `manual/contest/*.json`；`manual/config/config.json` **不参与** manual 覆盖合并。
 
-## setup GUI（`python -m ptapatch.setup`）
+## setup GUI（`python -m pta2icpc.setup`）
 
 一次性 tkinter GUI，可重复运行；写出 `manual/contest/setup-*.json` 后退出。GUI 本身不自动化测试（tkinter 逻辑抽成纯函数单独测试）。
 
