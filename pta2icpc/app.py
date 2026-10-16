@@ -5,10 +5,11 @@ import datetime as dt
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import (JSONResponse, PlainTextResponse, RedirectResponse,
                                Response)
 
+from .auth import require_api_auth
 from .balloons import (BalloonState, build_balloon, build_contestproblem,
                        build_domjudge_contest, build_domjudge_org,
                        build_domjudge_team, first_ac_pairs, time_sort_key)
@@ -48,7 +49,8 @@ def _now_local(tz_str: str = "+08:00") -> dt.datetime:
 
 def create_app(store: Store, poller: Poller | None, contest_id: str,
                tz: str = "+08:00",
-               balloon_state: BalloonState | None = None) -> FastAPI:
+               balloon_state: BalloonState | None = None,
+               api_password: str | None = None) -> FastAPI:
     if balloon_state is None:
         balloon_state = BalloonState(BALLOONS_FILE)
 
@@ -68,7 +70,11 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
             except AttributeError:
                 pass  # client without aclose (e.g. test fakes)
 
-    app = FastAPI(title="PTA to ICPC", lifespan=lifespan)
+    # App-level dependency (not middleware): it only touches /api/v4/ paths
+    # and never wraps the response body, so the event-feed NDJSON stream is
+    # untouched. An empty/None password leaves the app fully open.
+    app = FastAPI(title="PTA to ICPC", lifespan=lifespan,
+                  dependencies=[Depends(require_api_auth(api_password or ""))])
     app.state.store = store
     app.state.poller = poller
     app.state.contest_id = contest_id
@@ -113,6 +119,13 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
     # Shared paths (contests/teams/organizations) serve DOMjudge-superset
     # shapes; the remaining collections keep the Contest API shape through
     # the catch-alls at the bottom.
+
+    # bare /api/v4 is registered as a real route so the auth dependency can
+    # guard it (Starlette's automatic trailing-slash redirect would otherwise
+    # fire before the dependency and return 307 to an unauthenticated client).
+    @app.get("/api/v4")
+    async def api_info_redirect(request: Request):
+        return RedirectResponse(request.url.replace(path="/api/v4/"))
 
     @app.get("/api/v4/")
     async def api_info():
@@ -317,4 +330,5 @@ def _build_default_app(conn: dict | None = None) -> FastAPI:
     manual = load_manual()
     store = Store()
     poller, tz = _make_poller(settings, conn, manual, store)
-    return create_app(store, poller, conn["contest_id"], tz=tz)
+    return create_app(store, poller, conn["contest_id"], tz=tz,
+                      api_password=settings.api_password)

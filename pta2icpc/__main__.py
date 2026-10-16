@@ -15,6 +15,10 @@ def main() -> None:
         print("connection not configured — run 'python -m pta2icpc.setup' first "
               "(manual/contest/setup-connection.json)", file=sys.stderr)
         raise SystemExit(1)
+    if not s.api_password.strip():
+        print("api_password not configured — run 'python -m pta2icpc.setup' first "
+              "(manual/config/config.json)", file=sys.stderr)
+        raise SystemExit(1)
     uvicorn.run(_build_default_app(conn), host=s.host, port=s.port)
 
 

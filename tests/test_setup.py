@@ -13,7 +13,9 @@ from pta2icpc.setup import (
     build_team_rows,
     build_teams_setup,
     fetch_setup_data,
+    generate_api_password,
     load_manual_setup,
+    merge_api_password,
     merge_contest_prefill,
     normalize_team_meta,
     prefill_contest_times,
@@ -22,6 +24,7 @@ from pta2icpc.setup import (
     sort_teams_by_label,
     toggle_print_problem,
     validate_contest_times,
+    write_api_password,
     write_connection,
     write_contest_setup,
     write_manual_setup,
@@ -703,3 +706,62 @@ def test_apply_team_edit_missing_row_is_noop_on_rows():
     apply_team_edit(team_meta, rows, "t1", {"seat": "B7"})
     assert team_meta["t1"]["seat"] == "B7"
     assert rows == [{"id": "t2", "seat": "A"}]  # untouched, no KeyError
+
+
+# --- api_password read/write (task 29) -------------------------------------
+
+def test_generate_api_password_shape():
+    for _ in range(50):
+        pw = generate_api_password()
+        assert len(pw) == 8
+        assert set(pw) <= set(
+            "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+        assert not (set(pw) & set("0O1lI"))
+
+
+@pytest.mark.parametrize("existing", [None, "", "  \n"])
+def test_merge_api_password_blank_starts_empty(existing):
+    assert merge_api_password(existing, "x") == {"api_password": "x"}
+
+
+def test_merge_api_password_preserves_existing_keys():
+    out = merge_api_password('{"host": "0.0.0.0", "port": 9000}', "x")
+    assert out == {"host": "0.0.0.0", "port": 9000, "api_password": "x"}
+
+
+def test_merge_api_password_overwrites_existing_password():
+    out = merge_api_password('{"api_password": "old", "port": 1}', "new")
+    assert out == {"api_password": "new", "port": 1}
+
+
+def test_merge_api_password_invalid_json_raises():
+    with pytest.raises(ValueError):
+        merge_api_password("{bad", "x")
+
+
+def test_merge_api_password_non_object_raises():
+    with pytest.raises(ValueError):
+        merge_api_password("[1, 2]", "x")
+
+
+def test_write_api_password_preserves_existing_keys(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"port": 9000}', encoding="utf-8")
+    write_api_password("s3cret", config_file=cfg)
+    assert json.loads(cfg.read_text(encoding="utf-8")) == {
+        "port": 9000, "api_password": "s3cret"}
+
+
+def test_write_api_password_creates_missing_file(tmp_path):
+    cfg = tmp_path / "sub" / "config.json"
+    write_api_password("s3cret", config_file=cfg)
+    assert json.loads(cfg.read_text(encoding="utf-8")) == {
+        "api_password": "s3cret"}
+
+
+def test_write_api_password_invalid_existing_not_overwritten(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{bad", encoding="utf-8")
+    with pytest.raises(ValueError):
+        write_api_password("s3cret", config_file=cfg)
+    assert cfg.read_text(encoding="utf-8") == "{bad"

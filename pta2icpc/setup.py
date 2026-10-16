@@ -26,6 +26,7 @@ import re
 from pathlib import Path
 
 from . import paths
+from .auth import generate_api_password
 from .config import Settings, load_connection, load_settings
 from .pta.client import PtaAuthError, PtaClient
 from .timefmt import parse_finalized_at, parse_reltime, to_iso_time
@@ -473,6 +474,41 @@ def write_connection(conn: dict, *,
         payload["print_server"] = print_server
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     (contest_dir / SETUP_CONNECTION_FILE).write_text(text, encoding="utf-8")
+
+
+def merge_api_password(existing_text: str | None, password: str) -> dict:
+    """Set top-level ``api_password``, keeping every other key untouched.
+
+    Missing / blank ``existing_text`` starts from ``{}``; malformed JSON (or
+    a non-object root) raises ``ValueError`` so the caller never overwrites a
+    file it could not understand.
+    """
+    if not existing_text or not existing_text.strip():
+        return {"api_password": password}
+    data = json.loads(existing_text)  # JSONDecodeError is a ValueError
+    if not isinstance(data, dict):
+        raise ValueError("config.json must contain a JSON object")
+    data["api_password"] = password
+    return data
+
+
+def write_api_password(password: str, *,
+                       config_file=paths.CONFIG_FILE) -> None:
+    """Write ``api_password`` into ``config.json``, preserving other settings.
+
+    Reads the existing file first (missing → new file); a malformed existing
+    file raises ``ValueError`` and is left untouched. Written atomically via a
+    ``.tmp`` sibling (UTF-8, indent 2).
+    """
+    config_file = Path(config_file)
+    existing = (config_file.read_text(encoding="utf-8")
+                if config_file.exists() else None)
+    data = merge_api_password(existing, password)
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    tmp = config_file.with_name(config_file.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(config_file)
 
 
 # --------------------------------------------------------------------------- #
@@ -1237,6 +1273,41 @@ def launch_gui(settings: Settings, problems, teams, meta, saved,
                command=reset_contest_times).grid(
         row=4, column=1, sticky="w", padx=8, pady=(8, 4))
 
+    # --- 接口认证 (/api/v4/ HTTP Basic) ---
+    auth_frame = ttk.LabelFrame(cframe, text="接口认证")
+    auth_frame.pack(anchor="nw", fill="x", padx=12, pady=(0, 12))
+    auth_form = ttk.Frame(auth_frame)
+    auth_form.pack(anchor="nw", padx=8, pady=8)
+    ttk.Label(auth_form, text="用户名").grid(row=0, column=0, sticky="w",
+                                            pady=4)
+    ttk.Label(auth_form, text="admin").grid(row=0, column=1, sticky="w",
+                                            padx=8)
+    ttk.Label(auth_form, text="密码").grid(row=1, column=0, sticky="w",
+                                          pady=4)
+    api_pass_var = tk.StringVar(
+        value=settings.api_password or generate_api_password())
+    api_pass_entry = ttk.Entry(auth_form, textvariable=api_pass_var, width=32)
+    api_pass_entry.grid(row=1, column=1, sticky="w", padx=8, pady=4)
+    api_pass_entry.bind("<KeyRelease>", lambda _e: mark_dirty())
+
+    def reset_api_password() -> None:
+        api_pass_var.set(generate_api_password())
+        mark_dirty()
+
+    def copy_api_password() -> None:
+        root.clipboard_clear()
+        root.clipboard_append(api_pass_var.get())
+
+    auth_btns = ttk.Frame(auth_form)
+    auth_btns.grid(row=1, column=2, sticky="w")
+    ttk.Button(auth_btns, text="随机重置",
+               command=reset_api_password).pack(side="left")
+    ttk.Button(auth_btns, text="复制",
+               command=copy_api_password).pack(side="left", padx=4)
+    ttk.Label(auth_form, text="供 CDS / xcpc-tools 使用；保存后重启服务生效",
+              foreground="#666").grid(row=2, column=0, columnspan=3,
+                                      sticky="w", pady=(4, 0))
+
     notebook.add(cframe, text="比赛设置")
 
     # ---------------- bottom bar buttons ----------------
@@ -1296,6 +1367,10 @@ def launch_gui(settings: Settings, problems, teams, meta, saved,
         if not ok:
             messagebox.showerror("比赛设置", error, parent=root)
             return
+        pw = api_pass_var.get().strip()
+        if not pw:
+            messagebox.showerror("比赛设置", "接口密码不能为空", parent=root)
+            return
         problems_colors = {
             r["label"]: {"color": r["color"], "rgb": r["rgb"]}
             for r in problem_rows if r["changed"] and not r["print"]}
@@ -1303,14 +1378,23 @@ def launch_gui(settings: Settings, problems, teams, meta, saved,
         teams_out = build_teams_setup(assignments, team_meta)
         print_problem = next((r["label"] for r in problem_rows if r["print"]),
                              None)
-        write_manual_setup(problems_colors, groups_out, teams_out,
-                           print_problem, contest_dir=contest_dir)
-        write_contest_setup(payload["contest"], contest_dir=contest_dir)
+        try:
+            # password first: its writer is the only one that can reject an
+            # existing (unparseable) config.json, so a failure aborts before
+            # the other two files are touched
+            write_api_password(pw, config_file=paths.CONFIG_FILE)
+            write_manual_setup(problems_colors, groups_out, teams_out,
+                               print_problem, contest_dir=contest_dir)
+            write_contest_setup(payload["contest"], contest_dir=contest_dir)
+        except (ValueError, OSError) as e:
+            messagebox.showerror("比赛设置", f"保存失败：{e}", parent=root)
+            return
         state["dirty"] = False
         root.title("PTA to ICPC setup — 首次运行配置")
         messagebox.showinfo(
             "保存到 manual/contest",
             f"已写入 {contest_dir.as_posix()}\n"
+            f"接口密码已写入 {paths.CONFIG_FILE.as_posix()}\n"
             "比赛设置改动需重启服务器后生效。", parent=root)
 
     def on_close() -> None:
@@ -1413,6 +1497,11 @@ def main() -> None:
             raise SystemExit(1)
         problems, teams, meta = _fetch_remote(
             conn, settings.pta_requests_per_second)
+    if not settings.api_password:
+        # self-heal: writing setup-connection.json implies a usable password
+        # exists, so the service entry point never refuses to start
+        write_api_password(generate_api_password())
+        settings = load_settings()
     launch_gui(settings, problems, teams, meta, saved, conn)
 
 

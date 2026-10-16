@@ -102,6 +102,17 @@ def test_load_settings_empty_json_returns_defaults(tmp_path: Path):
     assert load_settings(p) == Settings()
 
 
+# --- api_password (task 29) ------------------------------------------------
+
+def test_api_password_defaults_empty():
+    assert Settings().api_password == ""
+
+
+def test_api_password_from_file(tmp_path: Path):
+    s = load_settings(make_cfg(tmp_path, api_password="s3cret"))
+    assert s.api_password == "s3cret"
+
+
 # --- connection (manual/contest/setup-connection.json, task 17) --------------
 
 def test_load_connection_returns_both_fields(tmp_path: Path):
