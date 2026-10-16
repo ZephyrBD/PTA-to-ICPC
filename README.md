@@ -73,28 +73,31 @@ python -m venv .venv
 { "host": "127.0.0.1", "port": 8000 }
 ```
 
-字段表与目录布局见 `docs/configuration.md`。所有命令必须在 `pta2ccs/` 目录下运行（路径为相对路径）。
+字段表与目录布局见 `docs/configuration.md`。所有命令必须在 `ptapatch/` 目录下运行（路径为相对路径）。
 
 ## 文档
 
-| 文件 | 内容 |
-|---|---|
-| `docs/configuration.md` | 设置文件、目录布局、运行要求 |
-| `docs/api.md` | `/api/v4/` 端点、事件流与定稿、气球契约 |
-| `docs/data-and-setup.md` | 数据来源与覆盖、setup GUI、打印流水线、语言 id |
-| `docs/troubleshooting.md` | 常见问题 |
-| `docs/pta-api-findings.md` | PTA 内部接口调研笔记 |
-| `docs/superpowers/specs/` | 设计文档（5 篇） |
+| 文件                         | 内容                            |
+| -------------------------- | ----------------------------- |
+| `docs/configuration.md`    | 设置文件、目录布局、运行要求                |
+| `docs/api.md`              | `/api/v4/` 端点、事件流与定稿、气球契约     |
+| `docs/data-and-setup.md`   | 数据来源与覆盖、setup GUI、打印流水线、语言 id |
+| `docs/troubleshooting.md`  | 常见问题                          |
+| `docs/pta-api-findings.md` | PTA 内部接口调研笔记                  |
+| `docs/superpowers/specs/`  | 设计文档（5 篇）                     |
 
-设计文档：`docs/superpowers/specs/2026-10-13-pta2ccs-design.md`、`2026-10-15-print-domjudge-design.md`、`2026-10-15-domjudge-balloons-design.md`、`2026-10-15-v4-unify-design.md`、`2026-10-15-cds-finalize-design.md`。
+设计文档：`docs/superpowers/specs/2026-10-13-ptapatch-design.md`、`2026-10-15-print-domjudge-design.md`、`2026-10-15-domjudge-balloons-design.md`、`2026-10-15-v4-unify-design.md`、`2026-10-15-cds-finalize-design.md`。
 
 ## 开发
 
 - 测试：`.venv/Scripts/python -B -m pytest -q -p no:cacheprovider`（`-B -p no:cacheprovider` 避免留下 `__pycache__`/`.pytest_cache`）。
-- 项目结构：`pta2ccs/`（服务：`app`/`config`/`paths`/`poller`/`store`/`translate`/`scoreboard`/`event_feed`/`balloons`/`printjob`/`models`/`timefmt`/`setup`/`diag_balloons` + `pta/` 子包）、`tests/`（pytest，逐模块对应）。
+- 项目结构：`ptapatch/`（服务：`app`/`config`/`paths`/`poller`/`store`/`translate`/`scoreboard`/`event_feed`/`balloons`/`printjob`/`models`/`timefmt`/`setup`/`diag_balloons` + `pta/` 子包）、`tests/`（pytest，逐模块对应）。
 - 规范：ICPC Contest API 2026-01（https://ccs-specs.icpc.io/2026-01/）；实现说明见 `docs/superpowers/specs/`。
 
 ## 相关项目与致谢
 
-ICPC Contest API 2026-01、DOMjudge、ICPC Contest Data Server (CDS)、xcpc-tools。
-参考项目：https://github.com/laobuzhang/PTA_BALL（本项目是另一个实现，非其分支）。
+- [ICPC Contest API 2026-01](https://ccs-specs.icpc.io/2026-01/) —— 本项目实现的接口规范。
+- [ICPC Tools](https://github.com/icpctools/icpctools)（[CDS](https://tools.icpc.global/cds/) / Resolver）—— 主要消费方。
+- [DOMjudge](https://github.com/DOMjudge/domjudge)（[官网](https://www.domjudge.org/)）—— `/api/v4/` 与 balloons 形状的参考。
+- [Hydro/xcpc-tools](https://github.com/hydro-dev/xcpc-tools) —— 气球 / 打印消费方（下文简称 xcpc-tools）。
+- [laobuzhang/PTA_BALL](https://github.com/laobuzhang/PTA_BALL) —— 本项目脱胎的参考项目。
