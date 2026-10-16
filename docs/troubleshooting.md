@@ -30,7 +30,7 @@
 
 **现象**：不知道 `/api/v4/` 的 Basic 密码。
 
-**处理**：重跑 `.venv/Scripts/python -m pta2icpc.setup`，在「比赛设置」tab 点「随机重置」并保存，然后**重启服务**；或直接查看 `manual/config/config.json` 的 `api_password`。消费者侧同步更新凭据。
+**处理**：重跑 `.venv/Scripts/python -m pta2icpc.setup`，在「比赛设置」tab 点「随机重置」并保存，然后**重启服务**；或直接查看 `manual/config/config.json` 的 `api_password`。启动服务时控制台也会打印 `Server View User Info: admin / <密码>`。消费者侧同步更新凭据。
 
 ## PTA 429 限流
 

@@ -63,7 +63,7 @@ python -m venv .venv
 
 1. **首次配置**：`.venv/Scripts/python -m pta2icpc.setup` —— 一次性 GUI。首次弹出「比赛连接」对话框填 `contest_id` + PTA cookie（可选打印服务器 URL；比赛中要改可点顶栏「🔗 比赛连接…」）；再设置题目颜色 / 自定义分组 / 打印题 / 座位·队员·教练 / 比赛时间覆盖，保存后写出 `manual/contest/setup-*.json`。可重复运行。「比赛设置」tab 还会生成/保存 `manual/config/config.json` 的接口密码（`/api/v4/` Basic 认证，用户名 `admin`；可「随机重置」/「复制」）。
 
-2. **启动服务**：在 `pta2icpc/` 目录下 `.venv/Scripts/python -m pta2icpc`（没有模块级 `app`，不能用 `uvicorn pta2icpc.app:app`）。**未配置接口密码则拒绝启动**（先跑 setup）。
+2. **启动服务**：在 `pta2icpc/` 目录下 `.venv/Scripts/python -m pta2icpc`（没有模块级 `app`，不能用 `uvicorn pta2icpc.app:app`）。启动时控制台会打印接口凭据 `Server View User Info: admin / <密码>`。**未配置接口密码则拒绝启动**（先跑 setup）。
 
 3. **自检**：`curl http://127.0.0.1:8000/healthz`（免认证）；`curl -u admin:<接口密码> http://127.0.0.1:8000/api/v4/`。
 

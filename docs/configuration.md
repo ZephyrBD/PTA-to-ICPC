@@ -53,4 +53,4 @@
 ## 密钥
 
 - `manual/contest/setup-connection.json` 含 PTA cookie（`pta_cookie`）与可选打印服务器 URL；`manual/config/config.json` 含接口密码（`api_password`）。这两者都是密钥载体；整个 `manual/` 已 gitignore。
-- 不要把 cookie 或 `api_password` 复制进任何文档、日志或提交。
+- 不要把 cookie 或 `api_password` 复制进任何文档、日志或提交。唯一例外：服务启动时把接口凭据打印到控制台（`Server View User Info: admin / <密码>`），方便操作者直接读取。

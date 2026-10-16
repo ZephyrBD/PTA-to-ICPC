@@ -4,7 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pta2icpc.app import create_app
-from pta2icpc.auth import API_USERNAME, check_basic_auth, generate_api_password
+from pta2icpc.auth import (API_USERNAME, check_basic_auth, credentials_banner,
+                           generate_api_password)
 from pta2icpc.store import Store
 
 ALLOWED = set("abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789")
@@ -36,6 +37,10 @@ def test_generate_api_password_never_uses_lookalikes():
 
 def test_username_is_admin():
     assert API_USERNAME == "admin"
+
+
+def test_credentials_banner_format():
+    assert credentials_banner("qUAX9Bft") == "Server View User Info: admin / qUAX9Bft"
 
 
 # --- check_basic_auth ------------------------------------------------------

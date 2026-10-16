@@ -5,7 +5,10 @@ The username is fixed (``admin``); the password lives in
 setup GUI. Only ``/api/v4/*`` is guarded — ``/healthz`` and the legacy
 ``/contests*`` redirects stay open for local self-checks.
 
-Never log or print the password or any ``Authorization`` header.
+The password must never be logged or recorded, with one deliberate
+exception: the service entry point prints :func:`credentials_banner` on
+startup so the operator can read the credentials off the console. Never log
+any ``Authorization`` header.
 """
 
 from __future__ import annotations
@@ -60,6 +63,15 @@ def check_basic_auth(header: str | None, password: str) -> bool:
     return (hmac.compare_digest(user.encode("utf-8"), API_USERNAME.encode())
             and hmac.compare_digest(passwd.encode("utf-8"),
                                     password.encode("utf-8")))
+
+
+def credentials_banner(password: str) -> str:
+    """The startup line showing the API credentials on the console.
+
+    Deliberate exception to the "never print the password" rule (requested
+    by the operator): ``Server View User Info: admin / <password>``.
+    """
+    return f"Server View User Info: {API_USERNAME} / {password}"
 
 
 def require_api_auth(password: str):

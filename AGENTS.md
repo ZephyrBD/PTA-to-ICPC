@@ -16,7 +16,7 @@
 ## 硬约束
 
 - **绝不**提交 / 打印 / 记录 PTA cookie。`manual/contest/setup-connection.json` 与历史 `config.json` 都是密钥载体；`manual/` 整目录已 gitignore。
-- **绝不**提交 / 打印 / 记录 `api_password`（`manual/config/config.json`）——`/api/v4/` 的 HTTP Basic 密钥，与 PTA cookie 同级。
+- **绝不**提交 / 记录 `api_password`（`manual/config/config.json`）——`/api/v4/` 的 HTTP Basic 密钥，与 PTA cookie 同级。**唯一例外**：服务入口启动时打印 `credentials_banner`（`Server View User Info: admin / <密码>`），供操作者从控制台读取。
 - 打印流水线会产生**真实硬件**副作用：测试**绝不允许**走打印路径（`manual/print_sent.json`、`printjob.send_job`）。用 `httpx.MockTransport` 等替身。
 - 不擅自启停用户的服务；不改真实状态文件（`manual/` 下的运行文件）。
 - 子代理不得提交 / 推送；测试只能使用 `tmp_path` + `monkeypatch.chdir`。
