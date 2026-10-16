@@ -1,86 +1,100 @@
 # pta2ccs
 
-把 PTA (pintia.cn) Web UI 内部接口转成 ICPC Contest API 2026-01 只读服务。
+![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![tests](https://img.shields.io/badge/tests-442%20passed-brightgreen)
 
-用法：
-1. `python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"`
-2. （**可选**）程序设置只有一个文件 `manual/config/config.json`，缺失即全部使用默认值。字段及默认值：
+把 PTA (pintia.cn) Web UI 内部接口转成 ICPC Contest API 2026-01 只读服务，供 ICPC CDS→resolver 与 xcpc-tools（气球/打印）消费。
 
-   | 字段 | 默认值 | 说明 |
-   |---|---|---|
-   | `host` | `127.0.0.1` | 监听地址 |
-   | `port` | `8000` | 监听端口 |
-   | `poll_interval_seconds` | `5.0` | 轮询间隔（秒） |
-   | `config_poll_seconds` | `60.0` | 花名册/题目等低频数据刷新间隔（秒） |
-   | `pta_requests_per_second` | `2.0` | PTA 全局请求限速 |
-   | `detail_fetch_per_round` | `5` | 每轮详情拉取条数上限 |
-   | `fetch_details` | `true` | 是否拉取提交详情 |
+## 特性
 
-   cookie 与 contest_id 不在这个文件里，由 setup GUI 写入 `manual/contest/setup-connection.json`（已 gitignore）。启动时会自动创建 `manual/`、`manual/config/`、`manual/contest/`。
-3. **首次运行**：`.venv/Scripts/python -m pta2ccs.setup` —— 一次性 GUI。首次启动弹出**比赛连接**对话框（填 contest_id + PTA cookie；可选填**打印服务器 URL**；之后可随时用顶栏「🔗 比赛连接…」按钮重新打开），然后从 PTA 拉取题目和队伍，设置每题颜色与自定义队伍分组（**比赛设置** tab 可覆盖开赛时间 / 时长 / 封榜时长 / 定稿规则；三个时间输入框默认由刚拉取的 PTA 值预填，保存时显式写入），题目侧栏用**打印题**单选面板标一题（其数据不进 CDS），队伍侧栏的**座位号 / 队员 / 教练**改用弹窗编辑（双击队伍行或点「编辑队伍…」打开，表格有**座位号**列），写出 `manual/contest/setup-*.json` 后退出。可重复运行（再次运行会预填上次的选择，分组 id 稳定复用）
-4. 在 `pta2ccs/` 目录下 `.venv/Scripts/python -m pta2ccs`（设置读自 `manual/config/config.json`、连接读自 `manual/contest/setup-connection.json`，缺失时打印错误并退出；启动时自动创建 `manual/`、`manual/config/`、`manual/contest/`；没有模块级 `app`，不能用 `uvicorn pta2ccs.app:app`）
-5. `GET http://127.0.0.1:8000/api/v4/` → api info；`GET /healthz` → 就绪状态。旧路径 `/` 与 `/contests/...` 一律 301 重定向到 `/api/v4/...`（见下）
+- **Contest API 2026-01 + DOMjudge v4 超集**：全部接口挂在 `/api/v4/`；共享路径（contests/teams/organizations）用 DOMjudge 形状，其余集合保持 Contest API 形状。
+- **event-feed / 冻结 / 自动定稿**：NDJSON 事件流、删除事件、封榜、比赛结束后按 `end + 5:00` 自动定稿；消费者读到 `end_of_updates` 后自行结束下载（EOF），不会超时。
+- **气球端点**：每 (队伍, 题目) 首次 AC 一个气球，`balloonid` 只增、永不复用，供 xcpc-tools 稳定 upsert。
+- **打印流水线**：扮演 DOMjudge，把打印题提交的源码按打印脚本的 multipart 形状 POST 到 `PRINT_SERVER`。
+- **setup GUI**：一次性配置连接、题目颜色、自定义分组、打印题、座位/队员/教练、比赛时间覆盖。
+- **PTA 限流自适应**：全局请求限速 + 每轮详情预算；429 触发冷却，不拖垮整轮。
+- **纯只读**：无任何写回 PTA 的端点，`capabilities` 为空。
+- **Windows 单机可跑**：绑 `127.0.0.1`，无认证。
 
-## 数据来源与手动覆盖
+## 架构与数据流
 
-以下数据全部按 `manual/contest/setup-connection.json` 里的 `contest_id` 从 PTA API 自动获取，无需手工维护：
+```mermaid
+flowchart LR
+  PTA["PTA pintia.cn<br/>内部 JSON 接口"] -->|轮询拉取| P["pta2ccs :8000<br/>只读 Contest API"]
+  P -->|Contest API /api/v4| CDS["ICPC CDS :8080"]
+  CDS -->|event-feed + 定稿| R["ICPC resolver"]
+  P -->|/balloons + 打印| X["xcpc-tools :5283"]
+```
 
-- 比赛名、开赛/结束时间、比赛时长（`GET /api/problem-sets/{id}`）
-- 封榜时长（`hideScoreboard` + `hidingTime`，按"开赛后 X 分钟封榜"换算；始终基于**最终生效**的 duration 计算 —— 即 显式 duration 优先，无显式时用 PTA duration，两者都缺时用内置默认 5:00:00 —— 因此 manual 覆盖 duration 后封榜时刻仍正确）
-- 全部可用编译器 → `/languages`（38 种，随 PTA 配置变化）
-- 题目列表、全量选手花名册 → `/teams`；PTA 用户组只映射到 `/organizations`（学校），**不再**生成 `/groups`
+- PTA → pta2ccs：带 PTA cookie 轮询拉取提交/题目/队伍，翻译成 Contest API 对象并缓存。
+- pta2ccs → CDS：CDS 以 `RESTContestSource` 消费 `/api/v4/` 并镜像事件流。
+- CDS → resolver：定稿后 CDS 正常结束下载，resolver 无需 `--test` 即可运行。
+- pta2ccs → xcpc-tools：消费 `/balloons`（气球发放）与打印流水线。
 
-事件流 `GET /api/v4/contests/{id}/event-feed`（NDJSON）：对象从快照中消失时按规范发出删除事件（`data: null`）。`token` 为字符串；`?since_token=` 接收字符串。比赛**定稿**后（见下 `finalized_at`）`/state` 的 `end_of_updates` 落定，此后丢弃一切更新（快照冻结），事件流以 EOF 结束（CDS 正常退出，而非超时）。
+## 环境要求
 
-`manual/contest/*.json` 仅用于**覆盖**，优先级：**manual 显式配置 > PTA API > 内置默认**。改完重启生效。典型用途：改比赛罚时、把用户组/队伍名改成中文显示名。
+- Python 3.13+（见 `pyproject.toml`）。
+- Windows（下文命令用 `.venv/Scripts/python`；Linux/macOS 请改为 `.venv/bin/python`）。
+- tkinter（Python 标准库，仅 setup GUI 需要）。
+- 一个能查看该场比赛榜单的 PTA 账号 cookie（会过期，需覆盖整场比赛）。
+- 可选：一个 DOMjudge 打印脚本端点（`PRINT_SERVER`）。
 
-### 比赛设置（`setup-contest.json`）
+## 安装
 
-`manual/contest/setup-contest.json`（`{"contest": {...}}`，由 setup GUI **比赛设置** tab 写出）覆盖 PTA 推导的比赛参数：`start_time`（ISO-8601，需带时区偏移）、`duration` / `scoreboard_freeze_duration`（`时:分:秒`），以及 `finalized_at` 定稿规则。三个时间框打开时由**刚拉取的 PTA 值**预填（已有 `manual` 覆盖值优先；封榜时长按**最终生效**的 duration 计算，与保存后服务端解析一致 —— 故「预填后原样保存」不会改变行为；解析出的封榜为 0（即开赛即封榜/未封榜）时预填为**空**，表示封榜关闭，保存后服务端仍解析为 `0:00:00`）；重新拉取会**实时读取**三个输入框当前内容，只更新「未被编辑」的框，你手动改过的值不会被覆盖，「恢复自动（留空）」按钮清空三框回到自动。保存时按当前输入**显式写入** `setup-contest.json`：
+```bash
+python -m venv .venv
+.venv/Scripts/python -m pip install -e ".[dev]"
+```
 
-- 省略 / `""` / `"auto"`（默认）→ **自动定稿**：**纯时间驱动**，比赛结束后 **5 分钟**（`end + 5:00`）再 **1 秒**（即 `now >= end + 5:00 + 1s`）即定稿：`finalized` = `thawed` = `end + 5:00`（`thawed` 仅在封榜时写）、`end_of_updates` = `end + 5:00 + 1s`，保证 `结束 < finalized/thawed < end_of_updates` 严格成立，且发出时间不晚于 `now`（比较用**带时区**的 datetime，与比赛偏移无关）。**零提交、仍有未判定提交都不阻止**（迟到判定在冻结后被丢弃）；已结束但仍有未判定提交时轮询器仍会**去重**打一次 warning（仅提示，不影响定稿）。
-- `"never"` → 永不自动定稿（`/state.finalized` 与 `end_of_updates` 为 null）。
-- ISO-8601 时间 → 显式定稿：`T = max(该时间, 结束 + 1s)`，`end_of_updates = T + 1s`。
+## 快速开始
 
-### 题目颜色 / 队伍分组 / 打印题（`setup` GUI 写出）
+1. **首次配置**：`.venv/Scripts/python -m pta2ccs.setup` —— 一次性 GUI。首次弹出「比赛连接」对话框填 `contest_id` + PTA cookie（可选打印服务器 URL；比赛中要改可点顶栏「🔗 比赛连接…」）；再设置题目颜色 / 自定义分组 / 打印题 / 座位·队员·教练 / 比赛时间覆盖，保存后写出 `manual/contest/setup-*.json`。可重复运行。
+2. **启动服务**：在 `pta2ccs/` 目录下 `.venv/Scripts/python -m pta2ccs`（没有模块级 `app`，不能用 `uvicorn pta2ccs.app:app`）。
+3. **自检**：`curl http://127.0.0.1:8000/healthz`、`curl http://127.0.0.1:8000/api/v4/`。
+4. **接入消费者**（片段里不放任何真实凭据）：
 
-`manual/contest/setup-problems.json`、`setup-groups.json`、`setup-teams.json`（由 `python -m pta2ccs.setup` 生成，已被 gitignore）负责三个 PTA 没有的概念：
+   CDS `ccsConfig.xml` 里的 `<ccs>` 元素：
 
-- **题目颜色** `/problems[].color` / `rgb`：按题号（PTA label，如 `1-1`）设置，覆盖内置 PALETTE 默认色。
-- **自定义分组** `/groups` 与队伍上的 `group_ids` 数组（打星 / 正式 / 女队 …）：与 PTA 用户组（学校）完全独立，由操作者在 GUI 中定义；`group_ids` 为空数组表示不属于任何自定义分组。可用 `GET /api/v4/contests/{id}/scoreboard?group_id=g1` 只看某分组。
-- **打印题** `setup-problems.json` 的 `print_problem`：题目侧栏单选面板标一题。该题的**全部**数据（题目、submissions、judgements、runs、sources）都不进 CDS。未配置打印服务器时其提交不做详情拉取；配置了 `PRINT_SERVER` 则走打印流水线（见下）。
-- **座位号 / 队员 / 教练** `setup-teams.json` 的 `teams[id]` 上的 `seat` / `members` / `coaches`：在**队伍分组** tab 里，双击队伍行或选中后点「编辑队伍…」弹出对话框编辑（左侧表格有**座位号**列），确定写回、取消不改动。`seat` 覆盖队伍 `label`；`members` / `coaches` 不出现在队伍对象上，而是生成 `/persons`（contestant / coach，id 形如 `D22-m0` / `D22-c0`）。空值省略不写。
+   ```xml
+   <ccs url="http://127.0.0.1:8000/api/v4/contests/<contest_id>" user="pta2ccs" password="none"/>
+   ```
 
-### 打印流水线（`PRINT_SERVER`，扮演 DOMjudge）
+   xcpc-tools `config.server.yaml`：
 
-`manual/contest/setup-connection.json` 里的可选 `print_server`（连接对话框第三个输入框）开启后，每轮轮询把**打印题**的提交单独分流：
+   ```yaml
+   type: domjudge
+   server: http://127.0.0.1:8000
+   ```
 
-1. 从提交列表分区出来（不进 translate/store/scoreboard），逐条拉取源码（每轮最多 5 条，顺序执行；429 触发全局冷却）。
-2. store 应用新快照后，按 DOMjudge 打印脚本的 multipart 形状 `POST {print_server}`（`file` + `filename` / `lang` / `tname` / `team` / `location` / `group` 字段，文件名 `题目号.扩展名`，语言为 Contest API 标准 id）。
-3. 已发送 id 记在 `manual/print_sent.json`（gitignore），成功即持久化，重启不重发；缺失 / 损坏文件从空集开始。
-4. 源码为空 / 拉取失败 / POST 失败各计一次尝试，累计超过 10 次永久跳过并打 error 日志。
+## 配置
 
-未配置 `print_server` 时保持旧行为：打印题数据直接丢弃、不写任何状态。
+程序设置只有一个文件 `manual/config/config.json`（缺失即全部默认）。最小示例：
 
-### 语言 id（`/languages`）
+```json
+{ "host": "127.0.0.1", "port": 8000 }
+```
 
-编译器枚举与显示名统一映射到 Contest API 2026-01 标准语言 id（`GXX`/`CLANGXX` → `cpp`、`JAVAC` → `java`、`PYTHON3` → `python3` …），并带 known-languages 附录的 `extensions` 表；未知值经 `sanitize_id` 原样保留。提交的 `language_id` 同步用标准 id。
+字段表与目录布局见 `docs/configuration.md`。所有命令必须在 `pta2ccs/` 目录下运行（路径为相对路径）。
 
-### 统一 `/api/v4/` 布局（DOMjudge 超集 + Contest API 其余集合）
+## 文档
 
-全部接口统一挂在 `/api/v4/` 前缀下。共享路径（contests/teams/organizations）返回 **DOMjudge v4 形状的超集**（xcpctools 等 DOMjudge 消费者可直接用；Contest API 消费者容忍未知字段）；其余集合（state/scoreboard/groups/persons/problems/languages/judgement-types/submissions/judgements/runs/event-feed…）保持 **Contest API 2026-01 形状**。事件与 access 的 contest 类型为单数 `contest`；`/problems[].time_limit` 为**秒**（number，可含小数）、`memory_limit` 为 **MiB**、`code_limit` 为 KiB。
+| 文件 | 内容 |
+|---|---|
+| `docs/configuration.md` | 设置文件、目录布局、运行要求 |
+| `docs/api.md` | `/api/v4/` 端点、事件流与定稿、气球契约 |
+| `docs/data-and-setup.md` | 数据来源与覆盖、setup GUI、打印流水线、语言 id |
+| `docs/troubleshooting.md` | 常见问题 |
+| `docs/pta-api-findings.md` | PTA 内部接口调研笔记 |
+| `docs/superpowers/specs/` | 设计文档（5 篇） |
 
-- `GET /api/v4/` —— api info。
-- `GET /api/v4/contests` —— 比赛列表（DOMjudge contest 对象，`shortname = name`；快照未就绪返回 `[]`）。
-- `GET /api/v4/contests/{cid}` —— 单比赛（DOMjudge 对象；`end_time` = **start + duration**，比赛未结束也填，start 缺失/非法则为 null）。
-- `GET /api/v4/contests/{cid}/teams` / `/organizations` —— DOMjudge 超集数组（按 id 排序）。team 带 `externalid/display_name/affiliation_id/public_description/hidden/location`；`public_description` 由 persons 推导（`队员：…、…；教练：…、…`，无队员/教练为 null）。organization 带 `formal_name/shortname/country/country_flag/logo/affiliation_id/icpc_id`。
-- 其余集合走 catch-all：`GET /api/v4/contests/{cid}/{collection}` 与 `/…/{collection}/{item_id}`（Contest API 形状，支持 query 过滤；`teams`/`organizations` 的**单对象**路由仍走这里）。
-- 气球端点（DOMjudge 风格）：
-  - `GET /api/v4/contests/{cid}/balloons?todo=` —— 每 (队伍, 题目) **首次 AC** 一个气球；`todo=true` 只返回未发放。排序：未发放在前、已发放在后，各组内按首次 AC 时间倒序；`time` 为**数值 Unix 秒**。
-  - `POST /api/v4/contests/{cid}/balloons/{balloonId}/done` / `/undone` —— 标记已发 / 未发，成功 204，未知 id 404。
+设计文档：`docs/superpowers/specs/2026-10-13-pta2ccs-design.md`、`2026-10-15-print-domjudge-design.md`、`2026-10-15-domjudge-balloons-design.md`、`2026-10-15-v4-unify-design.md`、`2026-10-15-cds-finalize-design.md`。
 
-旧路径保留为 **301 重定向**（CDS 安全）：`/contests/{rest:path}` → `/api/v4/contests/{rest}`（query 原样保留）、`/` → `/api/v4/`；`/healthz` 不变。
+## 开发
 
-`done` 状态持久化在 `manual/balloons.json`（gitignore；形状 `{"next_id": int, "entries": {balloonid: {"team_id", "problem_id", "done", "active"}}}`）。每次请求按快照实时重算首次 AC：新气球按提交时间补号；某队某题的首次 AC 资格暂时消失时只把它标记 `active: false` 并**保留气球号与 `done`**，资格恢复时复用原号（id 只增、永不复用；状态文件只增不删）；重启不丢 `done`；缺失 / 损坏文件从空状态开始（warning，不抛）。
+- 测试：`.venv/Scripts/python -B -m pytest -q -p no:cacheprovider`（`-B -p no:cacheprovider` 避免留下 `__pycache__`/`.pytest_cache`）。
+- 项目结构：`pta2ccs/`（服务：`app`/`config`/`paths`/`poller`/`store`/`translate`/`scoreboard`/`event_feed`/`balloons`/`printjob`/`models`/`timefmt`/`setup`/`diag_balloons` + `pta/` 子包）、`tests/`（pytest，逐模块对应）。
+- 规范：ICPC Contest API 2026-01（https://ccs-specs.icpc.io/2026-01/）；实现说明见 `docs/superpowers/specs/`。
 
-设计文档：`../docs/superpowers/specs/2026-10-13-pta2ccs-design.md`、`../docs/superpowers/specs/2026-10-15-print-domjudge-design.md`、`../docs/superpowers/specs/2026-10-15-domjudge-balloons-design.md`、`../docs/superpowers/specs/2026-10-15-v4-unify-design.md`
+## 相关项目与致谢
+
+ICPC Contest API 2026-01、DOMjudge、ICPC Contest Data Server (CDS)、xcpc-tools。
+参考项目：https://github.com/laobuzhang/PTA_BALL（本项目是另一个实现，非其分支）。
