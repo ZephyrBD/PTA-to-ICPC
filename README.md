@@ -1,6 +1,6 @@
 # PTA to ICPC
 
-![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-0078D6) ![platform](https://img.shields.io/badge/platform-Linux-FCC624) ![platform](https://img.shields.io/badge/platform-macOS-000000) ![tests](https://img.shields.io/badge/tests-550%20passed-brightgreen)
+![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-0078D6) ![platform](https://img.shields.io/badge/platform-Linux-FCC624) ![platform](https://img.shields.io/badge/platform-macOS-000000) ![tests](https://img.shields.io/badge/tests-550%20passed-brightgreen) ![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
 
 把 PTA 上可见的比赛数据转译为 ICPC Contest API 转接服务，供 ICPC Tools 与 Hydro/xcpc-tools 使用。
 
@@ -18,16 +18,21 @@ PTA 官方提供稳定的 Contest API 的付费服务，正式赛事请直接采
 
 ## 特性
 
-- **Contest API 2026-01 + DOMjudge v4 超集**：全部接口挂在 `/api/v4/`；共享路径（contests/teams/organizations）用 DOMjudge 形状，其余集合保持 Contest API 形状。
-- **event-feed / 冻结 / 自动定稿**：NDJSON 事件流、删除事件、封榜、比赛结束后按 `end + 5:00` 自动定稿；消费者读到 `end_of_updates` 后自行结束下载（EOF），不会超时。
+- **Contest API 2026-01 + DOMjudge v4 超集**：全部接口挂在 `/api/v4/`；共享路径用 DOMjudge 形状，其余集合保持 Contest API 形状。
+
+- **event-feed**：NDJSON 事件流、删除事件、封榜、比赛结束后按 `end + 5:00` 自动定稿。
+
 - **气球端点**：每 (队伍, 题目) 首次 AC 一个气球，`balloonid` 只增、永不复用，供 xcpc-tools 稳定 upsert。
+
 - **打印流水线**：扮演 DOMjudge，把打印题提交的源码按打印脚本的 multipart 形状 POST 到 `PRINT_SERVER`。
+
 - **setup GUI**：一次性配置连接、题目颜色、自定义分组、打印题、座位/队员/教练、比赛时间覆盖。
-- **PTA 限流自适应**：全局请求限速（带抖动）+ 每轮详情预算；429 触发冷却，不拖垮整轮。
-- **持久化缓存**：每轮成功轮询后把快照写入 `manual/cache/state.json`（节流 + 原子写），重启时先服务未过期快照再增量刷新——重启即就绪，不再全量重拉详情、消除 429 尖峰（TTL / 开关可配）。
-- **纯只读**：无任何写回 PTA 的端点，`capabilities` 为空。
+
+- **持久化缓存**：每轮成功轮询后把快照写入 `manual/cache/state.json`，重启时先服务未过期快照再增量刷新——重启即就绪。
+
+- **纯只读**：无任何写回 PTA 的端点。
+
 - **HTTP Basic 认证**：`/api/v4/` 支持 HTTP Basic 认证（用户名固定 `admin`，密码由 setup 随机生成、可在「比赛设置」tab 改）；`/healthz` 与本机自检保持开放。
-- **统一日志**：服务与 setup 的运行日志（含 uvicorn 启动与访问日志）按同一布局同时写入 stderr 与 `manual/pta2icpc.log`（5 MB × 3 大小轮转）；控制台为彩色（xcpc-tools 风格、级别色标签），日志文件为纯文本。
 
 ## 架构与数据流
 
@@ -112,3 +117,11 @@ uv sync
 - [DOMjudge](https://github.com/DOMjudge/domjudge) —— `/api/v4/` 与 balloons 形状的参考。
 - [Hydro/xcpc-tools](https://github.com/hydro-dev/xcpc-tools) —— 气球 / 打印消费方（下文简称 xcpc-tools）。
 - [laobuzhang/PTA_BALL](https://github.com/laobuzhang/PTA_BALL) —— 本项目脱胎的参考项目。
+
+## 许可证
+
+本项目以 [GNU Affero General Public License v3.0 或更新版本](LICENSE)（`AGPL-3.0-or-later`）授权。
+
+你可以自由使用、修改和分发本项目；条件是保留版权与许可声明，衍生作品须以同一许可开源；若通过网络向用户提供服务，须向这些用户提供对应源代码。软件按「原样」提供，不附带任何担保。
+
+许可证约束的是**代码**；上方合规警告约束的是**数据获取用途**，两者相互独立。请注意 AGPL 与 ICPC CDS 等非商业许可不兼容——请勿把这类源码并入本项目。

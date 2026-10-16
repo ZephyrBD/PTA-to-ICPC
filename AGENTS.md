@@ -21,6 +21,7 @@
 - 不擅自启停用户的服务；不改真实状态文件（`manual/` 下的运行文件）。
 - 子代理不得提交 / 推送；测试只能使用 `tmp_path` + `monkeypatch.chdir`。
 - 不修改 `config.json`、`manual/`、工作区根的 `参考项目/`。
+- **许可证**：本仓库为 `AGPL-3.0-or-later`（`LICENSE` + `pyproject.toml` 的 `license`）。**禁止**引入 CDS 等非商业 / 不兼容许可的源码；引入 MIT / BSD 等宽松许可第三方代码时须保留其版权与许可声明（不得删除或改写）。
 
 ## 布局不变量
 

@@ -1,6 +1,10 @@
 [project]
 name = "pta2icpc"
 version = "0.5.0"
+description = "把 PTA 上可见的比赛数据转译为 ICPC Contest API 的本地演示服务"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "ZephyrBD" }]
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
@@ -18,7 +22,7 @@ pta2icpc-diag = "pta2icpc.diag_balloons:main"
 dev = ["pytest>=8.3"]
 
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
