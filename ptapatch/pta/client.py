@@ -12,7 +12,7 @@ from ..timefmt import parse_offset
 
 log = logging.getLogger(__name__)
 
-# Findings §"Recommended normalization": compiler enum → UI language string
+# 实测观察：compiler enum → UI language string
 # (网页设置页显示名; live-verified 2026-10-14 against all 38 enabled
 # compilers). MODERN_GCC is "C (gcc c11)", not a C++ variant.
 COMPILER_LANGUAGES: dict[str, str] = {
@@ -56,9 +56,9 @@ COMPILER_LANGUAGES: dict[str, str] = {
     "CANGJIE": "仓颉 (cjc)",
 }
 
-# Findings §4: the /members endpoint needs this filter (percent-encoded by
-# httpx — Tomcat rejects raw {}). Pagination is page/limit, NOT the
-# before/hasBefore cursor used by /submissions.
+# 实测观察：/members 需要该 filter（httpx 百分号编码 —— Tomcat 拒绝原始 {}）。
+# Pagination is page/limit, NOT the before/hasBefore cursor used by
+# /submissions.
 MEMBERS_FILTER = (
     '{"studentUserFilter":{"keyword":"","unbindOnly":false,'
     '"field":"STUDENT_NUMBER"}}'
@@ -110,13 +110,12 @@ def _parse_retry_after(value: str | None) -> float:
 
 
 class PtaClient:
-    """Async client for the pintia.cn internal API (docs/pta-api-findings.md).
+    """Async client for the pintia.cn data API visible to a logged-in account.
 
-    Deviations from the brief skeleton are documented in
-    .superpowers/sdd/task-6-report.md: real /api endpoints, cursor
-    pagination for submissions (after/before/hasBefore; total is always 0),
-    page/limit pagination for the /members roster, row normalization, and
-    optional tz/transport kwargs.
+    Endpoint/pagination notes (from direct observation): real /api
+    endpoints, cursor pagination for submissions (after/before/hasBefore;
+    total is always 0), page/limit pagination for the /members roster, row
+    normalization, and optional tz/transport kwargs.
     """
 
     def __init__(self, base_url: str, contest_id: str, cookie: str, *,
@@ -126,10 +125,10 @@ class PtaClient:
                  requests_per_second: float = 2.0):
         self.submissions_url = (
             f"{base_url}/api/problem-sets/{contest_id}/submissions")
-        # per-submission detail (source code + per-case runs; findings §2)
+        # per-submission detail (source code + per-case runs)
         self.submissions_api_url = f"{base_url}/api/submissions"
         # full problems list with programmingProblemConfig limits
-        # (findings §3; replaces the labels-only problem-types endpoint)
+        # (replaces the labels-only problem-types endpoint)
         self.problems_url = (
             f"{base_url}/api/problem-sets/{contest_id}/problems")
         self.members_url = (
@@ -152,7 +151,7 @@ class PtaClient:
         # every submissions response (embedded problemSetProblemById map).
         self._labels: dict[str, str] = {}
         # Never log or expose this dict; a single Cookie header avoids the
-        # duplicate-anonymous-PTASession pitfall (findings §Authentication).
+        # duplicate-anonymous-PTASession pitfall.
         self._headers = {
             "Accept": "application/json;charset=UTF-8",
             "Cookie": f"PTASession={cookie}",
@@ -190,7 +189,7 @@ class PtaClient:
         """Full snapshot, newest first, via cursor pagination.
 
         `before=<id>` pages backwards in time while `hasBefore` is true
-        (findings §1; `total` is always 0 — never used).
+        (observed: `total` is always 0 — never used).
         """
         out: dict[str, dict] = {}
         cursor: str | None = None
@@ -214,7 +213,7 @@ class PtaClient:
         return list(out.values())
 
     async def fetch_problems(self) -> list[dict]:
-        """Full problems list from GET /problems (findings §3).
+        """Full problems list from GET /problems.
 
         page/limit pagination like /members (loop while a page returns
         exactly `limit` rows). `id` is the PTA **label** (e.g. "1-3"), not
@@ -267,7 +266,7 @@ class PtaClient:
         return out
 
     async def fetch_contest_meta(self) -> dict:
-        """Contest metadata from GET /api/problem-sets/{id} (findings §5).
+        """Contest metadata from GET /api/problem-sets/{id}.
 
         `name` is the raw problemSet.name — the contest-name source for
         translate when manual/contest/00-contest.json sets no explicit name.
@@ -306,8 +305,8 @@ class PtaClient:
         }
 
     async def fetch_submission_detail(self, sub_id: str) -> dict:
-        """Per-submission detail from GET /api/submissions/{id}
-        (findings §2). Returns only the safe subset: program (source),
+        """Per-submission detail from GET /api/submissions/{id}.
+        Returns only the safe subset: program (source),
         compiler enum, and per-case run results. Never log the program or
         the raw response — it also embeds stdout/stderr/checkerOutput
         (privacy) and compilationResult.log (CE log deliberately
@@ -342,7 +341,7 @@ class PtaClient:
                 "run_results": run_results}
 
     async def fetch_teams(self) -> list[dict]:
-        """Full roster from the /members endpoint (findings §4).
+        """Full roster from the /members endpoint.
 
         Page/limit pagination with a real `total` (NOT the submissions
         cursor): loop while a page returns exactly `limit` rows, with a

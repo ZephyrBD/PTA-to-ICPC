@@ -2,7 +2,19 @@
 
 ![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![tests](https://img.shields.io/badge/tests-442%20passed-brightgreen)
 
-把 PTA (pintia.cn) Web UI 内部接口转成 ICPC Contest API 2026-01 只读服务，供 ICPC CDS→resolver 与 xcpc-tools（气球/打印）消费。
+把 PTA (pintia.cn) 上账号已可见的比赛数据转译为 ICPC Contest API 2026-01 只读服务，供 ICPC CDS→resolver 与 xcpc-tools（气球/打印）消费。
+
+> [!WARNING]
+> 本项目仅为 **ICPC Contest API 协议研究与技术演示工具**。
+> 它仅在本地读取账号已可见的比赛数据，将其转译为标准化竞赛接口。
+>
+> 1. 本工具**仅用于技术学习、本地测试**；
+> 2. 禁止在PTA生产环境，使用本工具举办正式竞赛；
+> 3. 使用本工具自动化访问PTA服务，需自行遵守PTA的用户协议；
+> 4. 自动化轮询PTA网页接口可能违反平台服务条款，使用者自行承担全部法律与账号风险；
+> 5. 本项目不提供任何形式的生产环境可用性承诺，无技术支持。
+
+PTA 官方另提供满足 Contest API 的付费服务，正式赛事建议直接采购或取得书面授权。
 
 ## 特性
 
@@ -86,7 +98,6 @@ python -m venv .venv
 | `docs/api.md`              | `/api/v4/` 端点、事件流与定稿、气球契约     |
 | `docs/data-and-setup.md`   | 数据来源与覆盖、setup GUI、打印流水线、语言 id |
 | `docs/troubleshooting.md`  | 常见问题                          |
-| `docs/pta-api-findings.md` | PTA 内部接口调研笔记                  |
 | `docs/superpowers/specs/`  | 设计文档（5 篇）                     |
 
 设计文档：`docs/superpowers/specs/2026-10-13-ptapatch-design.md`、`2026-10-15-print-domjudge-design.md`、`2026-10-15-domjudge-balloons-design.md`、`2026-10-15-v4-unify-design.md`、`2026-10-15-cds-finalize-design.md`。

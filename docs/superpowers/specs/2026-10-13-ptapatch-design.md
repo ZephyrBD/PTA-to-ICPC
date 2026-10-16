@@ -1,25 +1,25 @@
-# PTA Patch — PTA 内部接口转 ICPC Contest API 设计文档
+# PTA Patch — PTA 比赛数据转 ICPC Contest API 设计文档
 
 日期：2026-10-13（设计已经用户逐节确认）
 Spec 依据：ICPC CCS **Contest API 2026-01**（https://ccs-specs.icpc.io/2026-01/ ），速记见 `docs/contest-api.md`
 
 ## 目标
 
-做一个新服务 `ptapatch/`：逆向 pintia.cn Web UI 的内部 JSON 接口取数，在本机暴露一个**完整只读子集**的 Contest API 2026-01 服务器，供气球打印工具等客户端消费。替代参考项目（`参考项目/`）的 Selenium 爬 HTML 方案；参考项目保持不动，本期不改气球打印客户端。
+做一个新服务 `ptapatch/`：读取 pintia.cn 上账号已可见的比赛数据，在本机暴露一个**完整只读子集**的 Contest API 2026-01 服务器，供气球打印工具等客户端消费。替代参考项目（`参考项目/`）的 Selenium 抓取网页方案；参考项目保持不动，本期不改气球打印客户端。
 
 ## 已确认的约束
 
-- 数据来源：PTA Web UI 内部 JSON 接口（带 PTASession cookie 的纯 HTTP），不用 Selenium
+- 数据来源：PTA 上账号已可见的比赛数据（带 PTASession cookie 的纯 HTTP），不用 Selenium
 - 输出范围：只读 Contest API 完整子集 —— `api`、`access`、`contests`、`state`、`groups`、`organizations`、`teams`、`problems`、`languages`、`judgement-types`、`submissions`、`judgements`、`scoreboard`、`event-feed`；不做任何 POST/PUT/PATCH/DELETE
 - 部署：单场比赛，绑 `127.0.0.1`，无认证；PTA cookie 存在服务端配置
 - 技术栈：Python 3.13 + FastAPI + uvicorn + httpx + pydantic；测试 pytest
 - 取数：后台轮询 + 内存缓存
-- 实测条件：用户可提供有效 PTASession cookie 用于逆向探测
+- 实测条件：用户可提供有效 PTASession cookie 用于实机验证
 
 ## 架构（方案 A：分层翻译器 + 内存权威状态）
 
 ```
-PTA 内部接口 ──httpx──▶ pta/client.py ──原始JSON──▶ translate.py ◀── manual/*.json
+PTA 账号可见数据 ──httpx──▶ pta/client.py ──原始JSON──▶ translate.py ◀── manual/*.json
                                                               │
                                           ┌───────────────────┤
                                           ▼                   ▼
@@ -59,9 +59,8 @@ ptapatch/
     app.py
     event_feed.py
   tests/
-    fixtures/                 # 逆向阶段录下的 PTA 真实 JSON + 手写边界用例
+    fixtures/                 # 实机验证阶段录下的 PTA 真实 JSON + 手写边界用例
     test_translate.py  test_scoreboard.py  test_api.py  test_event_feed.py
-  docs/pta-api-findings.md    # 逆向探测结论（实现 Phase 1 产出）
 ```
 
 ## 配置
@@ -104,7 +103,7 @@ ptapatch/
 | `languages` | 有则映射 | 占位 `unknown` |
 | `judgement-types` | 文案→AC/WA/TLE/CE/PE/RTE/MLE/OLE…（`verdicts.py`，可被 manual 覆盖） | 标准表含 `solved`/`penalty` |
 | `submissions` | PTA 提交 id 原样作 `id`；PTA 时间戳作 `time`；`contest_time` 由 start_time 算 | `files` 不暴露（拿不到源码） |
-| `judgements` | 每提交一条；“正在评测”时 `judgement_type_id` 为 null，判完更新 | `end_time` 尽力而为，拿不到用提交时间近似（记录在 findings） |
+| `judgements` | 每提交一条；“正在评测”时 `judgement_type_id` 为 null，判完更新 | `end_time` 尽力而为，拿不到用提交时间近似 |
 
 不支持的端点（`persons`/`accounts`/`runs`/`awards`/`clarifications`/`commentary`/`webhooks`）不进 `access`——access 即真实能力清单。`capabilities: []`（纯只读）。
 
@@ -144,7 +143,7 @@ ptapatch/
 ## 实施顺序
 
 1. 项目脚手架 + 配置加载 + manual 合并
-2. **Phase 1 逆向探测**（需用户 cookie）：抓 PTA 内部接口，产出 `docs/pta-api-findings.md` + fixtures，定稿 `verdicts.py` 映射
+2. **Phase 1 实机验证**（需用户 cookie）：读取 PTA 账号可见数据，产出 fixtures，定稿 `verdicts.py` 映射
 3. models + translate + scoreboard（fixture 驱动开发）
 4. store + poller
 5. app.py 全路由 + event_feed

@@ -39,7 +39,7 @@
 
 ## 参考材料
 
-- `docs/superpowers/specs/*`（设计文档，5 篇）、`docs/pta-api-findings.md`（PTA 内部接口调研笔记）。
+- `docs/superpowers/specs/*`（设计文档，5 篇）。
 - 工作区根：`docs/contest-api.md`（Contest API 2026-01 摘录，**仓外**）。
 - 工作区根：`参考项目/`（上游 PTA_BALL 克隆，只读参考）。
 - 致谢 / 参考：[ICPC Contest API 2026-01](https://ccs-specs.icpc.io/2026-01/)、[ICPC Tools](https://github.com/icpctools/icpctools)（[CDS](https://tools.icpc.global/cds/)）、[DOMjudge](https://github.com/DOMjudge/domjudge)（[官网](https://www.domjudge.org/)）、[Hydro/xcpc-tools](https://github.com/hydro-dev/xcpc-tools)、[laobuzhang/PTA_BALL](https://github.com/laobuzhang/PTA_BALL)。

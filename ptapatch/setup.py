@@ -6,8 +6,8 @@ and teams once from PTA, opens the GUI, writes the operator's choices into
 The server process never imports tkinter.
 
 Pure, testable logic lives at module level; all tkinter usage is confined to
-``launch_gui()`` / ``launch_connection_dialog()`` (tkinter imported lazily)
-so importing this module is headless-safe.
+``show_compliance_warning()`` / ``launch_gui()`` / ``launch_connection_dialog()``
+(tkinter imported lazily) so importing this module is headless-safe.
 
 Data semantics (see README / docs):
 - PTA userGroups feed ONLY ``organization_id`` + ``organizations``.
@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import logging
 import re
 from pathlib import Path
 
@@ -29,6 +30,8 @@ from .config import Settings, load_connection, load_settings
 from .pta.client import PtaAuthError, PtaClient
 from .timefmt import parse_finalized_at, parse_reltime, to_iso_time
 from .translate import PALETTE, resolve_contest_times
+
+log = logging.getLogger(__name__)
 
 SETUP_PROBLEMS_FILE = paths.SETUP_PROBLEMS_FILE.name
 SETUP_GROUPS_FILE = paths.SETUP_GROUPS_FILE.name
@@ -496,6 +499,36 @@ def _fetch_remote(conn: dict, requests_per_second: float
 # --------------------------------------------------------------------------- #
 # GUI (tkinter imported lazily; never needed for tests)
 # --------------------------------------------------------------------------- #
+
+COMPLIANCE_WARNING_TEXT = (
+    "本项目仅为 ICPC Contest API 协议研究与技术演示工具。\n"
+    "它仅在本地读取账号已可见的比赛数据，将其转译为标准化竞赛接口。\n"
+    "\n"
+    "1. 本工具仅用于技术学习、本地测试；\n"
+    "2. 禁止在PTA生产环境，使用本工具举办正式竞赛；\n"
+    "3. 使用本工具自动化访问PTA服务，需自行遵守PTA的用户协议；\n"
+    "4. 自动化轮询PTA网页接口可能违反平台服务条款，使用者自行承担全部法律与账号风险；\n"
+    "5. 本项目不提供任何形式的生产环境可用性承诺，无技术支持。\n"
+    "\n"
+    "PTA 官方另提供满足 Contest API 的付费服务，正式赛事建议直接采购或取得书面授权。"
+)
+
+
+def show_compliance_warning(parent=None) -> None:
+    """Modal compliance warning shown once, before the setup window appears.
+
+    A single OK button (warning-only), so it never blocks automation beyond
+    the user's acknowledgement. Best-effort: when tkinter / messagebox is
+    unavailable (headless env), log and return instead of crashing the setup
+    flow. The GUI is never part of the test/automation path.
+    """
+    try:
+        from tkinter import messagebox
+        messagebox.showwarning("使用须知 / Warning",
+                               COMPLIANCE_WARNING_TEXT, parent=parent)
+    except Exception:  # noqa: BLE001 - the warning must never break setup
+        log.warning("compliance warning dialog unavailable", exc_info=True)
+
 
 def launch_connection_dialog(parent, settings: Settings,
                              contest_dir=paths.CONTEST_DIR,
@@ -1358,6 +1391,7 @@ def launch_gui(settings: Settings, problems, teams, meta, saved,
 
 
 def main() -> None:
+    show_compliance_warning()
     settings = load_settings()
     saved = load_manual_setup()
     conn = load_connection()

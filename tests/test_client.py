@@ -281,8 +281,8 @@ def test_fetch_submission_detail_defensive_shapes():
 
 
 def test_fetch_contest_meta():
-    """GET /api/problem-sets/{id} → name/hiding/compilers/times (findings §5,
-    live-verified 2026-10-14: hidingTime 360 min AFTER start — passed through
+    """GET /api/problem-sets/{id} → name/hiding/compilers/times (live-verified
+    2026-10-14: hidingTime 360 min AFTER start — passed through
     raw; translate converts to the end-relative freeze against the final
     duration)."""
     payload = load("contest_meta.json")
