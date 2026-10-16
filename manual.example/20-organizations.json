@@ -1,8 +1,0 @@
-{
-  "organizations": {
-    "PUT_PTA_USER_GROUP_ID_HERE": {"name": "组织显示名（如：某大学）"}
-  },
-  "teams": {
-    "PUT_STUDENT_USER_ID_HERE": {"name": "队伍显示名", "icpc_id": "0001"}
-  }
-}

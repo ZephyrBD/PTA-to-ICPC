@@ -9,7 +9,6 @@ from pta2ccs.config import Settings, load_connection, load_manual, load_settings
 
 def make_cfg(tmp_path: Path, **overrides) -> Path:
     data = {
-        "manual_dir": "manual",
         "poll_interval_seconds": 5.0,
         "config_poll_seconds": 60.0,
         "host": "127.0.0.1",
@@ -24,7 +23,6 @@ def make_cfg(tmp_path: Path, **overrides) -> Path:
 def test_load_settings_reads_all_fields(tmp_path: Path):
     s = load_settings(make_cfg(tmp_path, port=9001))
     assert s.port == 9001
-    assert s.manual_dir == Path("manual")
 
 
 def test_load_settings_invalid_field_fails(tmp_path: Path):
@@ -71,7 +69,7 @@ def test_load_settings_empty_json_returns_defaults(tmp_path: Path):
     assert load_settings(p) == Settings()
 
 
-# --- connection (manual/setup-connection.json, task 17) ---------------------
+# --- connection (manual/contest/setup-connection.json, task 17) --------------
 
 def test_load_connection_returns_both_fields(tmp_path: Path):
     (tmp_path / "setup-connection.json").write_text(

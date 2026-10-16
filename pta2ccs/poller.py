@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from .config import Settings
+from .paths import PRINT_SENT_FILE
 from .printjob import build_job, send_job
 from .pta.client import PtaAuthError, PtaClient, PtaRateLimitError
 from .pta.langs import primary_extension, std_language_id
@@ -82,21 +83,21 @@ class Poller:
     def __init__(self, client: PtaClient, store: Store, settings: Settings,
                  manual: dict, *, contest_id: str,
                  print_server: str | None = None,
-                 print_sent_path: Path | str = Path("print_sent.json")):
+                 print_sent_path: Path | str = PRINT_SENT_FILE):
         self.client = client
         self.store = store
         self.settings = settings
         self.manual = manual
-        # connection identity lives in manual/setup-connection.json (task
-        # 17), not Settings — passed straight through to translate()
+        # connection identity lives in manual/contest/setup-connection.json
+        # (task 17), not Settings — passed straight through to translate()
         self.contest_id = contest_id
         # PRINT_SERVER (optional): when unset, print-problem submissions
         # are simply dropped (old behaviour); when set, their source is
         # fetched and POSTed to the print server each round.
         self.print_server = print_server or None
-        # already-printed submission ids, persisted to print_sent.json
-        # (cwd-relative like config.json / manual/); loaded leniently so a
-        # missing or corrupt file just starts from an empty set.
+        # already-printed submission ids, persisted to manual/print_sent.json;
+        # loaded leniently so a missing or corrupt file just starts from an
+        # empty set.
         self._print_sent_path = Path(print_sent_path)
         self._print_sent: set[str] = self._load_print_sent()
         # sid → failed-attempt count (source fetch / empty source / POST)
@@ -241,13 +242,14 @@ class Poller:
         return {str(s) for s in sent}
 
     def _persist_print_sent(self) -> None:
-        """Write print_sent.json (tmp + replace; failure only warns — a
-        lost write means a duplicate print, never a crashed poll round)."""
+        """Write manual/print_sent.json (tmp + replace; failure only warns —
+        a lost write means a duplicate print, never a crashed poll round)."""
         payload = json.dumps({"sent": sorted(self._print_sent)},
                              ensure_ascii=False) + "\n"
         tmp = self._print_sent_path.parent / (
             self._print_sent_path.name + ".tmp")
         try:
+            self._print_sent_path.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(payload, encoding="utf-8")
             tmp.replace(self._print_sent_path)
         except OSError as e:

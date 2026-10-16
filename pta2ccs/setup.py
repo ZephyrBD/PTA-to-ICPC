@@ -2,7 +2,7 @@
 
 Run before the server starts (``python -m pta2ccs.setup``). Fetches problems
 and teams once from PTA, opens the GUI, writes the operator's choices into
-``manual/setup-*.json`` (auto-loaded by ``config.load_manual``), then exits.
+``manual/contest/setup-*.json`` (auto-loaded by ``config.load_manual``), then exits.
 The server process never imports tkinter.
 
 Pure, testable logic lives at module level; all tkinter usage is confined to
@@ -24,16 +24,17 @@ import json
 import re
 from pathlib import Path
 
+from . import paths
 from .config import Settings, load_connection, load_settings
 from .pta.client import PtaAuthError, PtaClient
 from .timefmt import parse_finalized_at, parse_reltime, to_iso_time
 from .translate import PALETTE, resolve_contest_times
 
-SETUP_PROBLEMS_FILE = "setup-problems.json"
-SETUP_GROUPS_FILE = "setup-groups.json"
-SETUP_TEAMS_FILE = "setup-teams.json"
-SETUP_CONNECTION_FILE = "setup-connection.json"
-SETUP_CONTEST_FILE = "setup-contest.json"
+SETUP_PROBLEMS_FILE = paths.SETUP_PROBLEMS_FILE.name
+SETUP_GROUPS_FILE = paths.SETUP_GROUPS_FILE.name
+SETUP_TEAMS_FILE = paths.SETUP_TEAMS_FILE.name
+SETUP_CONNECTION_FILE = paths.CONNECTION_FILE.name
+SETUP_CONTEST_FILE = paths.SETUP_CONTEST_FILE.name
 
 _GROUP_ID_RE = re.compile(r"g(\d+)\Z")
 
@@ -383,16 +384,17 @@ def validate_contest_times(start_time, duration, freeze, finalized_at,
     return True, "", {"contest": contest}
 
 
-def write_contest_setup(manual_dir, contest: dict) -> None:
-    """Write ``manual_dir/setup-contest.json`` (UTF-8, indent 2)."""
-    manual_dir = Path(manual_dir)
-    manual_dir.mkdir(parents=True, exist_ok=True)
+def write_contest_setup(contest: dict, *,
+                        contest_dir=paths.CONTEST_DIR) -> None:
+    """Write ``contest_dir/setup-contest.json`` (UTF-8, indent 2)."""
+    contest_dir = Path(contest_dir)
+    contest_dir.mkdir(parents=True, exist_ok=True)
     payload = {"contest": build_contest_setup(contest)}
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    (manual_dir / SETUP_CONTEST_FILE).write_text(text, encoding="utf-8")
+    (contest_dir / SETUP_CONTEST_FILE).write_text(text, encoding="utf-8")
 
 
-def load_manual_setup(manual_dir) -> dict:
+def load_manual_setup(contest_dir=paths.CONTEST_DIR) -> dict:
     """Read the four ``setup-*.json`` files if present.
 
     Returns ``{"problems": {...}, "groups": {...}, "teams": {...},
@@ -404,12 +406,12 @@ def load_manual_setup(manual_dir) -> dict:
     """
     out: dict = {"problems": {}, "groups": {}, "teams": {},
                  "contest": {}, "print_problem": None}
-    manual_dir = Path(manual_dir)
+    contest_dir = Path(contest_dir)
     for key, fname in (("problems", SETUP_PROBLEMS_FILE),
                        ("groups", SETUP_GROUPS_FILE),
                        ("teams", SETUP_TEAMS_FILE),
                        ("contest", SETUP_CONTEST_FILE)):
-        f = manual_dir / fname
+        f = contest_dir / fname
         if not f.exists():
             continue
         try:
@@ -428,8 +430,9 @@ def load_manual_setup(manual_dir) -> dict:
     return out
 
 
-def write_manual_setup(manual_dir, problems_colors, groups, assignments,
-                       print_problem=None) -> None:
+def write_manual_setup(problems_colors, groups, assignments,
+                       print_problem=None, *,
+                       contest_dir=paths.CONTEST_DIR) -> None:
     """Write the three setup files (UTF-8, no ASCII escaping, indent 2).
 
     ``assignments`` maps team_id → {group_ids: [...], seat?, members?,
@@ -439,8 +442,8 @@ def write_manual_setup(manual_dir, problems_colors, groups, assignments,
     setup-problems.json; None is written explicitly as null ("no print
     problem" is meaningful after switching contests).
     """
-    manual_dir = Path(manual_dir)
-    manual_dir.mkdir(parents=True, exist_ok=True)
+    contest_dir = Path(contest_dir)
+    contest_dir.mkdir(parents=True, exist_ok=True)
     payloads = {
         SETUP_PROBLEMS_FILE: {"problems": problems_colors,
                               "print_problem": print_problem},
@@ -449,48 +452,24 @@ def write_manual_setup(manual_dir, problems_colors, groups, assignments,
     }
     for fname, payload in payloads.items():
         text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-        (manual_dir / fname).write_text(text, encoding="utf-8")
+        (contest_dir / fname).write_text(text, encoding="utf-8")
 
 
-def write_connection(manual_dir, conn: dict) -> None:
-    """Write ``manual_dir/setup-connection.json`` (UTF-8, indent 2).
+def write_connection(conn: dict, *,
+                     contest_dir=paths.CONTEST_DIR) -> None:
+    """Write ``contest_dir/setup-connection.json`` (UTF-8, indent 2).
 
     The optional ``print_server`` URL is only written when non-empty.
     """
-    manual_dir = Path(manual_dir)
-    manual_dir.mkdir(parents=True, exist_ok=True)
+    contest_dir = Path(contest_dir)
+    contest_dir.mkdir(parents=True, exist_ok=True)
     payload = {"contest_id": conn["contest_id"],
                "pta_cookie": conn["pta_cookie"]}
     print_server = conn.get("print_server")
     if isinstance(print_server, str) and print_server:
         payload["print_server"] = print_server
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    (manual_dir / SETUP_CONNECTION_FILE).write_text(text, encoding="utf-8")
-
-
-def _residual_config_prefill(config_path) -> dict | None:
-    """Legacy config.json → connection prefill (migration convenience).
-
-    Returns ``{"contest_id": ..., "pta_cookie": ...}`` when the file exists
-    and both fields are non-empty strings; otherwise None (missing file,
-    malformed JSON, or incomplete fields).
-    """
-    path = Path(config_path)
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    contest_id = data.get("contest_id")
-    pta_cookie = data.get("pta_cookie")
-    if not isinstance(contest_id, str) or not contest_id:
-        return None
-    if not isinstance(pta_cookie, str) or not pta_cookie:
-        return None
-    return {"contest_id": contest_id, "pta_cookie": pta_cookie}
+    (contest_dir / SETUP_CONNECTION_FILE).write_text(text, encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #
@@ -518,7 +497,8 @@ def _fetch_remote(conn: dict, requests_per_second: float
 # GUI (tkinter imported lazily; never needed for tests)
 # --------------------------------------------------------------------------- #
 
-def launch_connection_dialog(parent, settings: Settings, manual_dir,
+def launch_connection_dialog(parent, settings: Settings,
+                             contest_dir=paths.CONTEST_DIR,
                              prefill=None) -> dict | None:
     """Modal dialog to enter/validate the PTA connection.
 
@@ -584,7 +564,7 @@ def launch_connection_dialog(parent, settings: Settings, manual_dir,
         except Exception as e:  # noqa: BLE001 - surface any fetch failure in-GUI
             messagebox.showerror("错误", f"拉取失败：{e}", parent=dlg)
             return
-        write_connection(manual_dir, conn)
+        write_connection(conn, contest_dir=contest_dir)
         result["conn"] = conn
         dlg.destroy()
 
@@ -695,13 +675,13 @@ def launch_team_dialog(parent, title: str, meta: dict) -> dict | None:
     return result["meta"]
 
 
-def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
+def launch_gui(settings: Settings, problems, teams, meta, saved,
                conn: dict) -> None:
     """Build and run the setup window. Blocking (tkinter mainloop)."""
     import tkinter as tk
     from tkinter import colorchooser, messagebox, simpledialog, ttk
 
-    manual_dir = Path(manual_dir)
+    contest_dir = paths.CONTEST_DIR
 
     problem_rows = build_problem_rows(problems, saved.get("problems") or {},
                                       saved.get("print_problem"))
@@ -1126,7 +1106,7 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
     notebook.add(tframe, text="队伍分组")
 
     # ---------------- Tab 3: contest times ----------------
-    # manual/setup-contest.json overrides the PTA-derived start/duration/
+    # manual/contest/setup-contest.json overrides the PTA-derived start/duration/
     # freeze and the finalization rule; the boxes are PREFILLED from the
     # freshly fetched PTA values (saved override wins), and blank fields
     # stay automatic on save (written explicitly like any other edit).
@@ -1237,8 +1217,9 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
             problems2, teams2, meta2 = _fetch_remote(
                 conn, settings.pta_requests_per_second)
         except PtaAuthError:
-            messagebox.showerror("错误", "cookie 失效，请更新 manual/setup-connection.json",
-                                 parent=root)
+            messagebox.showerror(
+                "错误", "cookie 失效，请更新 manual/contest/setup-connection.json",
+                parent=root)
             return
         except Exception as e:  # noqa: BLE001 - surface any fetch failure in-GUI
             messagebox.showerror("错误", f"拉取失败：{e}", parent=root)
@@ -1289,14 +1270,15 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
         teams_out = build_teams_setup(assignments, team_meta)
         print_problem = next((r["label"] for r in problem_rows if r["print"]),
                              None)
-        write_manual_setup(manual_dir, problems_colors, groups_out, teams_out,
-                           print_problem)
-        write_contest_setup(manual_dir, payload["contest"])
+        write_manual_setup(problems_colors, groups_out, teams_out,
+                           print_problem, contest_dir=contest_dir)
+        write_contest_setup(payload["contest"], contest_dir=contest_dir)
         state["dirty"] = False
         root.title("pta2ccs setup — 首次运行配置")
         messagebox.showinfo(
-            "保存到 manual",
-            f"已写入 {manual_dir}\n比赛设置改动需重启服务器后生效。", parent=root)
+            "保存到 manual/contest",
+            f"已写入 {contest_dir.as_posix()}\n"
+            "比赛设置改动需重启服务器后生效。", parent=root)
 
     def on_close() -> None:
         if state["dirty"] and not messagebox.askyesno(
@@ -1306,7 +1288,7 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
 
     def change_connection() -> None:
         nonlocal problem_rows, team_rows, team_meta, meta
-        new_conn = launch_connection_dialog(root, settings, manual_dir,
+        new_conn = launch_connection_dialog(root, settings, contest_dir,
                                             dict(conn))
         if new_conn is None:
             return
@@ -1376,18 +1358,15 @@ def launch_gui(settings: Settings, manual_dir, problems, teams, meta, saved,
 
 
 def main() -> None:
-    settings = load_settings(Path("config.json"))
-    saved = load_manual_setup(settings.manual_dir)
-    conn = load_connection(settings.manual_dir)
+    settings = load_settings()
+    saved = load_manual_setup()
+    conn = load_connection()
     if conn is None:
-        # first run / missing connection file — dialog, prefilled from any
-        # residual contest_id/pta_cookie still sitting in config.json
-        prefill = _residual_config_prefill(Path("config.json"))
-        conn = launch_connection_dialog(None, settings, settings.manual_dir,
-                                        prefill)
+        # first run / missing connection file — dialog, no prefill
+        conn = launch_connection_dialog(None, settings, paths.CONTEST_DIR, None)
         if conn is None:
             raise SystemExit(0)  # user cancelled
-        saved = load_manual_setup(settings.manual_dir)
+        saved = load_manual_setup()
     try:
         problems, teams, meta = _fetch_remote(
             conn, settings.pta_requests_per_second)
@@ -1395,12 +1374,12 @@ def main() -> None:
         # connection may be stale — fall back to the dialog (dict(conn)
         # keeps the optional print_server prefilled too)
         conn = launch_connection_dialog(
-            None, settings, settings.manual_dir, dict(conn))
+            None, settings, paths.CONTEST_DIR, dict(conn))
         if conn is None:
             raise SystemExit(1)
         problems, teams, meta = _fetch_remote(
             conn, settings.pta_requests_per_second)
-    launch_gui(settings, settings.manual_dir, problems, teams, meta, saved, conn)
+    launch_gui(settings, problems, teams, meta, saved, conn)
 
 
 if __name__ == "__main__":

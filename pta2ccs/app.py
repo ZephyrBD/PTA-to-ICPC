@@ -4,7 +4,6 @@ import asyncio
 import datetime as dt
 import sys
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (JSONResponse, PlainTextResponse, RedirectResponse,
@@ -15,6 +14,7 @@ from .balloons import (BalloonState, build_balloon, build_contestproblem,
                        build_domjudge_team, first_ac_pairs, time_sort_key)
 from .config import Settings, load_connection, load_manual, load_settings
 from .models import error_body, make_access, make_api_info
+from .paths import BALLOONS_FILE, ensure_dirs
 from .poller import Poller
 from .pta.client import PtaClient
 from .scoreboard import compute_scoreboard
@@ -50,7 +50,7 @@ def create_app(store: Store, poller: Poller | None, contest_id: str,
                tz: str = "+08:00",
                balloon_state: BalloonState | None = None) -> FastAPI:
     if balloon_state is None:
-        balloon_state = BalloonState()
+        balloon_state = BalloonState(BALLOONS_FILE)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -305,14 +305,15 @@ def _make_poller(settings: Settings, conn: dict, manual: dict,
 
 
 def _build_default_app(conn: dict | None = None) -> FastAPI:
-    settings = load_settings(Path("config.json"))
+    ensure_dirs()
+    settings = load_settings()
     if conn is None:
-        conn = load_connection(settings.manual_dir)
+        conn = load_connection()
         if conn is None:
             print("connection not configured — run 'python -m pta2ccs.setup' "
                   "first", file=sys.stderr)
             raise SystemExit(1)
-    manual = load_manual(settings.manual_dir)
+    manual = load_manual()
     store = Store()
     poller, tz = _make_poller(settings, conn, manual, store)
     return create_app(store, poller, conn["contest_id"], tz=tz)

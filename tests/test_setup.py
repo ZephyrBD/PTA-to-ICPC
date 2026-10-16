@@ -5,7 +5,6 @@ import pytest
 
 import pta2ccs.setup as setup
 from pta2ccs.setup import (
-    _residual_config_prefill,
     allocate_group_id,
     apply_team_edit,
     apply_team_meta,
@@ -170,7 +169,8 @@ def test_write_load_manual_setup_round_trip(tmp_path):
     problems = {"1-1": {"color": "red", "rgb": "#f00"}}
     groups = {"g1": {"name": "正式队伍"}}
     assignments = {"t1": {"group_ids": ["g1"]}}
-    write_manual_setup(tmp_path, problems, groups, assignments, "1-1")
+    write_manual_setup(problems, groups, assignments, "1-1",
+                       contest_dir=tmp_path)
     loaded = load_manual_setup(tmp_path)
     assert loaded["problems"] == problems
     assert loaded["groups"] == groups
@@ -181,15 +181,15 @@ def test_write_load_manual_setup_round_trip(tmp_path):
 def test_write_manual_setup_idempotent(tmp_path):
     args = ({"1-1": {"color": "red", "rgb": "#f00"}},
             {"g1": {"name": "正式队伍"}}, {"t1": {"group_ids": ["g1"]}})
-    write_manual_setup(tmp_path, *args)
+    write_manual_setup(*args, contest_dir=tmp_path)
     first = {f.name: f.read_text(encoding="utf-8") for f in tmp_path.glob("*.json")}
-    write_manual_setup(tmp_path, *args)
+    write_manual_setup(*args, contest_dir=tmp_path)
     second = {f.name: f.read_text(encoding="utf-8") for f in tmp_path.glob("*.json")}
     assert first == second
 
 
 def test_write_manual_setup_keeps_chinese(tmp_path):
-    write_manual_setup(tmp_path, {}, {"g1": {"name": "正式队伍"}}, {})
+    write_manual_setup({}, {"g1": {"name": "正式队伍"}}, {}, contest_dir=tmp_path)
     raw = (tmp_path / "setup-groups.json").read_text(encoding="utf-8")
     assert "正式队伍" in raw  # ensure_ascii=False
     assert "\\u" not in raw
@@ -197,7 +197,7 @@ def test_write_manual_setup_keeps_chinese(tmp_path):
 
 def test_write_manual_setup_creates_directory(tmp_path):
     target = tmp_path / "manual"
-    write_manual_setup(target, {}, {}, {})
+    write_manual_setup({}, {}, {}, contest_dir=target)
     assert (target / "setup-problems.json").exists()
     assert (target / "setup-groups.json").exists()
     assert (target / "setup-teams.json").exists()
@@ -255,14 +255,14 @@ def test_load_manual_setup_print_problem_malformed(tmp_path):
 
 
 def test_write_manual_setup_print_problem_none_writes_key(tmp_path):
-    write_manual_setup(tmp_path, {}, {}, {}, None)
+    write_manual_setup({}, {}, {}, None, contest_dir=tmp_path)
     data = json.loads((tmp_path / "setup-problems.json").read_text(
         encoding="utf-8"))
     assert data == {"problems": {}, "print_problem": None}
 
 
 def test_write_load_manual_setup_print_problem_round_trip(tmp_path):
-    write_manual_setup(tmp_path, {}, {}, {}, "A")
+    write_manual_setup({}, {}, {}, "A", contest_dir=tmp_path)
     assert load_manual_setup(tmp_path)["print_problem"] == "A"
 
 
@@ -319,11 +319,12 @@ def test_build_problem_rows_print_defaults_false():
 
 
 # ---------------------------------------------------------------------------
-# write_connection / _residual_config_prefill
+# write_connection
 # ---------------------------------------------------------------------------
 
 def test_write_connection(tmp_path):
-    write_connection(tmp_path, {"contest_id": "c1", "pta_cookie": "cookie"})
+    write_connection({"contest_id": "c1", "pta_cookie": "cookie"},
+                     contest_dir=tmp_path)
     data = json.loads((tmp_path / "setup-connection.json").read_text(
         encoding="utf-8"))
     assert data == {"contest_id": "c1", "pta_cookie": "cookie"}
@@ -331,35 +332,9 @@ def test_write_connection(tmp_path):
 
 def test_write_connection_creates_directory(tmp_path):
     target = tmp_path / "manual"
-    write_connection(target, {"contest_id": "c1", "pta_cookie": "cookie"})
+    write_connection({"contest_id": "c1", "pta_cookie": "cookie"},
+                     contest_dir=target)
     assert (target / "setup-connection.json").exists()
-
-
-def test_residual_config_prefill_full(tmp_path):
-    cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"contest_id": "c1", "pta_cookie": "cookie",
-                               "port": 9000}), encoding="utf-8")
-    assert _residual_config_prefill(cfg) == {
-        "contest_id": "c1", "pta_cookie": "cookie"}
-
-
-def test_residual_config_prefill_missing_file(tmp_path):
-    assert _residual_config_prefill(tmp_path / "config.json") is None
-
-
-def test_residual_config_prefill_incomplete(tmp_path):
-    cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"contest_id": "c1"}), encoding="utf-8")
-    assert _residual_config_prefill(cfg) is None
-    cfg.write_text(json.dumps({"contest_id": "", "pta_cookie": "cookie"}),
-                   encoding="utf-8")
-    assert _residual_config_prefill(cfg) is None
-
-
-def test_residual_config_prefill_malformed(tmp_path):
-    cfg = tmp_path / "config.json"
-    cfg.write_text("{not json", encoding="utf-8")
-    assert _residual_config_prefill(cfg) is None
 
 
 # ---------------------------------------------------------------------------
@@ -415,13 +390,15 @@ def test_build_teams_setup_empty_inputs():
 def test_write_load_manual_setup_seat_members_round_trip(tmp_path):
     teams = {"t1": {"group_ids": ["g1"], "seat": "A12",
                     "members": ["甲", "乙"], "coaches": ["丙"]}}
-    write_manual_setup(tmp_path, {}, {"g1": {"name": "正式队伍"}}, teams, None)
+    write_manual_setup({}, {"g1": {"name": "正式队伍"}}, teams, None,
+                       contest_dir=tmp_path)
     assert load_manual_setup(tmp_path)["teams"] == teams
 
 
 def test_write_connection_includes_print_server_when_set(tmp_path):
-    write_connection(tmp_path, {"contest_id": "c1", "pta_cookie": "cookie",
-                                "print_server": "http://printer.local/print"})
+    write_connection({"contest_id": "c1", "pta_cookie": "cookie",
+                      "print_server": "http://printer.local/print"},
+                     contest_dir=tmp_path)
     data = json.loads((tmp_path / "setup-connection.json").read_text(
         encoding="utf-8"))
     assert data == {"contest_id": "c1", "pta_cookie": "cookie",
@@ -431,8 +408,8 @@ def test_write_connection_includes_print_server_when_set(tmp_path):
 @pytest.mark.parametrize("print_server", ["", None, 42])
 def test_write_connection_omits_print_server_when_unset(
         tmp_path, print_server):
-    write_connection(tmp_path, {"contest_id": "c1", "pta_cookie": "cookie",
-                                "print_server": print_server})
+    write_connection({"contest_id": "c1", "pta_cookie": "cookie",
+                      "print_server": print_server}, contest_dir=tmp_path)
     data = json.loads((tmp_path / "setup-connection.json").read_text(
         encoding="utf-8"))
     assert data == {"contest_id": "c1", "pta_cookie": "cookie"}
@@ -502,8 +479,8 @@ def test_validate_contest_times_finalized_bad():
 
 
 def test_write_contest_setup_round_trip(tmp_path):
-    write_contest_setup(tmp_path, {"start_time": "2026-10-13T16:00:00+08:00",
-                                   "duration": "51:00:00"})
+    write_contest_setup({"start_time": "2026-10-13T16:00:00+08:00",
+                         "duration": "51:00:00"}, contest_dir=tmp_path)
     f = tmp_path / setup.SETUP_CONTEST_FILE
     data = json.loads(f.read_text(encoding="utf-8"))
     assert data == {"contest": {"start_time": "2026-10-13T16:00:00+08:00",

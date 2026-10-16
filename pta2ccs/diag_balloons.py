@@ -228,8 +228,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="只读诊断：对比 pta2ccs 的 balloons.json 与 "
                     "xcpc-tools 的 balloon.db（NeDB）")
-    parser.add_argument("--balloons-json", default="./balloons.json",
-                        help="我方气球状态文件 (默认 ./balloons.json)")
+    parser.add_argument("--balloons-json", default="manual/balloons.json",
+                        help="我方气球状态文件 (默认 manual/balloons.json)")
     parser.add_argument("--xcpc-db",
                         default="../xcpctools/data/.db/balloon.db",
                         help="xcpc-tools NeDB 气球库 "

@@ -1,7 +1,0 @@
-{
-  "manual_dir": "manual",
-  "poll_interval_seconds": 5.0,
-  "config_poll_seconds": 60.0,
-  "host": "127.0.0.1",
-  "port": 8000
-}

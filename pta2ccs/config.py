@@ -4,9 +4,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from .paths import CONFIG_FILE, CONNECTION_FILE, CONTEST_DIR
+
 
 class Settings(BaseModel):
-    manual_dir: Path = Path("manual")
     poll_interval_seconds: float = Field(default=5.0, gt=0)
     config_poll_seconds: float = Field(default=60.0, gt=0)
     host: str = "127.0.0.1"
@@ -25,9 +26,9 @@ def _fail(msg: str) -> None:
     raise SystemExit(1)
 
 
-def load_settings(path: Path = Path("config.json")) -> Settings:
-    """Read config.json; a missing file means all-default settings, while a
-    present file must parse and validate strictly."""
+def load_settings(path: Path = CONFIG_FILE) -> Settings:
+    """Read manual/config/config.json; a missing file means all-default
+    settings, while a present file must parse and validate strictly."""
     if not path.exists():
         return Settings()
     try:
@@ -42,14 +43,14 @@ def load_settings(path: Path = Path("config.json")) -> Settings:
         raise
 
 
-def load_connection(manual_dir: Path) -> dict[str, str] | None:
-    """Read manual_dir/setup-connection.json (written by the setup GUI).
+def load_connection(contest_dir: Path = CONTEST_DIR) -> dict[str, str] | None:
+    """Read contest_dir/setup-connection.json (written by the setup GUI).
 
     Returns {"contest_id": ..., "pta_cookie": ...} only when both are
     non-empty strings; missing file, malformed JSON, or incomplete fields
     give None — never raises, the caller decides how to fail.
     """
-    path = manual_dir / "setup-connection.json"
+    path = contest_dir / CONNECTION_FILE.name
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):  # JSONDecodeError + UnicodeDecodeError
@@ -74,7 +75,8 @@ def load_connection(manual_dir: Path) -> dict[str, str] | None:
 _ID_SECTIONS = ("groups", "organizations", "teams", "problems", "languages")
 
 
-def load_manual(manual_dir: Path) -> dict:
+def load_manual(contest_dir: Path = CONTEST_DIR) -> dict:
+    """Merge every ``manual/contest/*.json`` override file (sorted)."""
     merged: dict = {
         "contest": None,
         "groups": {},
@@ -88,9 +90,9 @@ def load_manual(manual_dir: Path) -> dict:
         # poller reads to drop that problem's data before translate
         "options": {},
     }
-    if not manual_dir.exists():
+    if not contest_dir.exists():
         return merged
-    for f in sorted(manual_dir.glob("*.json")):
+    for f in sorted(contest_dir.glob("*.json")):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:

@@ -391,7 +391,7 @@ def test_hiding_time_at_or_over_duration_clamps_to_zero():
 def test_manual_contest_fields_win_over_meta():
     """MANUAL pins start_time, duration and freeze "0:00:00" explicitly —
     the meta freeze must NOT override it (precedence semantics; the real
-    deployment keeps freeze off until manual/00-contest.json drops the key)."""
+    deployment keeps freeze off until manual/contest/00-contest.json drops the key)."""
     data = translate("999", MANUAL, [], [], None, NOW, meta=META)
     c = data.contest
     assert c["start_time"] == "2023-05-21T09:00:00+08:00"

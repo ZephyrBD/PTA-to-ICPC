@@ -270,7 +270,7 @@ class PtaClient:
         """Contest metadata from GET /api/problem-sets/{id} (findings §5).
 
         `name` is the raw problemSet.name — the contest-name source for
-        translate when manual/00-contest.json sets no explicit name.
+        translate when manual/contest/00-contest.json sets no explicit name.
 
         Freeze: problemSetConfig.hideScoreboard + hidingTime (minutes AFTER
         the contest STARTS — user-confirmed 2026-10-14, correcting the

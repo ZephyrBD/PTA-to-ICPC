@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 
+from .paths import BALLOONS_FILE
 from .timefmt import parse_reltime, to_iso_time
 from .translate import ContestData
 
@@ -251,7 +252,7 @@ def time_sort_key(iso) -> dt.datetime:
 
 class BalloonState:
     """Persisted (balloonid, team_id, problem_id, done, active) rows in
-    balloons.json (cwd, same convention as print_sent.json). Shape:
+    manual/balloons.json (same directory convention as print_sent.json). Shape:
     {"next_id": int, "entries": {balloonid: {"team_id", "problem_id",
     "done", "active"}}}.
 
@@ -269,7 +270,7 @@ class BalloonState:
     warning, never an exception; entries written before ``active`` existed
     are treated as active (lossless upgrade)."""
 
-    def __init__(self, path: Path | str = Path("balloons.json")):
+    def __init__(self, path: Path | str = BALLOONS_FILE):
         self._path = Path(path)
         self._lock = asyncio.Lock()
         self._next_id = 1
@@ -333,14 +334,15 @@ class BalloonState:
                 self._by_pair[pair] = bid
 
     def _persist(self) -> None:
-        """Write balloons.json (tmp + replace atomic write; failure only
-        warns — a lost write means re-numbering on restart, never a
+        """Write manual/balloons.json (tmp + replace atomic write; failure
+        only warns — a lost write means re-numbering on restart, never a
         crashed request)."""
         payload = json.dumps({"next_id": self._next_id,
                               "entries": self._entries},
                              ensure_ascii=False) + "\n"
         tmp = self._path.parent / (self._path.name + ".tmp")
         try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(payload, encoding="utf-8")
             tmp.replace(self._path)
         except OSError as e:
