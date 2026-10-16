@@ -10,6 +10,28 @@
 
 **处理**：重新获取 cookie，运行 `.venv/Scripts/python -m pta2icpc.setup`，在「比赛连接」对话框更新。确认 cookie 覆盖整场比赛。
 
+## `/api/v4/` 返回 401 / 认证失败
+
+**现象**：CDS / xcpc-tools 访问 `/api/v4/…` 返回 `401`，响应头 `WWW-Authenticate: Basic realm="pta2icpc"`、错误体 `{"code": 401, "message": "authentication required"}`。
+
+**原因**：`/api/v4/*` 需 HTTP Basic 认证（用户名固定 `admin`，密码为 `manual/config/config.json` 的 `api_password`）；消费者没带凭据或凭据不对。
+
+**处理**：给消费者补凭据——CDS 在 `ccsConfig.xml` 的 `<ccs user="admin" password="…"/>`，xcpc-tools 用 `username` / `password`（`type: domjudge`）。密码可在 setup「比赛设置」tab 的「接口认证」区查看 / 复制。
+
+## 启动报 `api_password not configured`
+
+**现象**：启动时 stderr 出现 `api_password not configured — run 'python -m pta2icpc.setup' first (manual/config/config.json)` 并以退出码 1 退出。
+
+**原因**：`manual/config/config.json` 里没有 `api_password`（认证**不可关闭**，必须有密码）。
+
+**处理**：运行 `.venv/Scripts/python -m pta2icpc.setup`，在「比赛设置」tab 的「接口认证」区保存密码（首次运行 setup 会自动生成一个密码）。
+
+## 忘记接口密码
+
+**现象**：不知道 `/api/v4/` 的 Basic 密码。
+
+**处理**：重跑 `.venv/Scripts/python -m pta2icpc.setup`，在「比赛设置」tab 点「随机重置」并保存，然后**重启服务**；或直接查看 `manual/config/config.json` 的 `api_password`。消费者侧同步更新凭据。
+
 ## PTA 429 限流
 
 **现象**：日志出现 `poll rate limited; sleeping …` 或 `detail fetch paused: rate limited, retry_after=…`；`/healthz` 的 `rate_limited_until` 非空。

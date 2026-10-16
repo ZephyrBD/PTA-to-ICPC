@@ -16,6 +16,7 @@
 ## 硬约束
 
 - **绝不**提交 / 打印 / 记录 PTA cookie。`manual/contest/setup-connection.json` 与历史 `config.json` 都是密钥载体；`manual/` 整目录已 gitignore。
+- **绝不**提交 / 打印 / 记录 `api_password`（`manual/config/config.json`）——`/api/v4/` 的 HTTP Basic 密钥，与 PTA cookie 同级。
 - 打印流水线会产生**真实硬件**副作用：测试**绝不允许**走打印路径（`manual/print_sent.json`、`printjob.send_job`）。用 `httpx.MockTransport` 等替身。
 - 不擅自启停用户的服务；不改真实状态文件（`manual/` 下的运行文件）。
 - 子代理不得提交 / 推送；测试只能使用 `tmp_path` + `monkeypatch.chdir`。
@@ -31,6 +32,7 @@
 - **气球 id**：只增、永不复用；资格暂时消失只标 `active: false` 并保留号与 `done`（`balloons.py`）。xcpc-tools 侧按 `balloonid` upsert——换号会造成孤儿行与已发放气球复活。
 - **自动定稿**：`auto` 规则为 `end + 5:00` 定稿、`end_of_updates = end + 5:00 + 1s`；`state` 事件必须是该批事件流的**最后一条**，`end_of_updates` 是 feed 的最后一行。零提交 / 未判定提交都不阻止定稿。
 - **设置校验**：`Settings` 非法必须 `SystemExit(1)`（打印 `config error: …`）。
+- **接口认证**：`/api/v4/*` 需 HTTP Basic（用户名固定 `admin`，密码为 `manual/config/config.json` 的 `api_password`，app 级依赖拦截）。无 `api_password`（空 / 缺失）服务入口**拒绝启动**（`SystemExit(1)`）；`/healthz` 与 `/contests*` 重定向保持开放；`create_app(api_password=None)` 仍完全开放（既有测试零改动）。
 
 ## 文档职责
 
@@ -39,7 +41,7 @@
 
 ## 参考材料
 
-- `docs/superpowers/specs/*`（设计文档，5 篇）。
+- `docs/superpowers/specs/*`（设计文档，6 篇）。
 - 工作区根：`docs/contest-api.md`（Contest API 2026-01 摘录，**仓外**）。
 - 工作区根：`参考项目/`（上游 PTA_BALL 克隆，只读参考）。
 - 致谢 / 参考：[ICPC Contest API 2026-01](https://ccs-specs.icpc.io/2026-01/)、[ICPC Tools](https://github.com/icpctools/icpctools)（[CDS](https://tools.icpc.global/cds/)）、[DOMjudge](https://github.com/DOMjudge/domjudge)（[官网](https://www.domjudge.org/)）、[Hydro/xcpc-tools](https://github.com/hydro-dev/xcpc-tools)、[laobuzhang/PTA_BALL](https://github.com/laobuzhang/PTA_BALL)。

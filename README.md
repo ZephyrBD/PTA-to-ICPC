@@ -1,6 +1,6 @@
 # PTA to ICPC
 
-![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![tests](https://img.shields.io/badge/tests-466%20passed-brightgreen)
+![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey) ![tests](https://img.shields.io/badge/tests-504%20passed-brightgreen)
 
 把 PTA (pintia.cn) 上账号已可见的比赛数据转译为 ICPC Contest API 2026-01 只读服务，供 ICPC CDS→resolver 与 xcpc-tools（气球/打印）消费。
 
@@ -26,7 +26,8 @@ PTA 官方另提供满足 Contest API 的付费服务，正式赛事建议直接
 - **PTA 限流自适应**：全局请求限速（带抖动）+ 每轮详情预算；429 触发冷却，不拖垮整轮。
 - **持久化缓存**：每轮成功轮询后把快照写入 `manual/cache/state.json`（节流 + 原子写），重启时先服务未过期快照再增量刷新——重启即就绪，不再全量重拉详情、消除 429 尖峰（TTL / 开关可配）。
 - **纯只读**：无任何写回 PTA 的端点，`capabilities` 为空。
-- **Windows 单机可跑**：绑 `127.0.0.1`，无认证。
+- **HTTP Basic 认证**：`/api/v4/` 支持 HTTP Basic 认证（用户名固定 `admin`，密码由 setup 随机生成、可在「比赛设置」tab 改）；`/healthz` 与本机自检保持开放。
+- **Windows 单机可跑**：绑 `127.0.0.1`，单机部署。
 
 ## 架构与数据流
 
@@ -60,18 +61,18 @@ python -m venv .venv
 
 ## 快速开始
 
-1. **首次配置**：`.venv/Scripts/python -m pta2icpc.setup` —— 一次性 GUI。首次弹出「比赛连接」对话框填 `contest_id` + PTA cookie（可选打印服务器 URL；比赛中要改可点顶栏「🔗 比赛连接…」）；再设置题目颜色 / 自定义分组 / 打印题 / 座位·队员·教练 / 比赛时间覆盖，保存后写出 `manual/contest/setup-*.json`。可重复运行。
+1. **首次配置**：`.venv/Scripts/python -m pta2icpc.setup` —— 一次性 GUI。首次弹出「比赛连接」对话框填 `contest_id` + PTA cookie（可选打印服务器 URL；比赛中要改可点顶栏「🔗 比赛连接…」）；再设置题目颜色 / 自定义分组 / 打印题 / 座位·队员·教练 / 比赛时间覆盖，保存后写出 `manual/contest/setup-*.json`。可重复运行。「比赛设置」tab 还会生成/保存 `manual/config/config.json` 的接口密码（`/api/v4/` Basic 认证，用户名 `admin`；可「随机重置」/「复制」）。
 
-2. **启动服务**：在 `pta2icpc/` 目录下 `.venv/Scripts/python -m pta2icpc`（没有模块级 `app`，不能用 `uvicorn pta2icpc.app:app`）。
+2. **启动服务**：在 `pta2icpc/` 目录下 `.venv/Scripts/python -m pta2icpc`（没有模块级 `app`，不能用 `uvicorn pta2icpc.app:app`）。**未配置接口密码则拒绝启动**（先跑 setup）。
 
-3. **自检**：`curl http://127.0.0.1:8000/healthz`、`curl http://127.0.0.1:8000/api/v4/`。
+3. **自检**：`curl http://127.0.0.1:8000/healthz`（免认证）；`curl -u admin:<接口密码> http://127.0.0.1:8000/api/v4/`。
 
 4. **接入消费者**（片段里不放任何真实凭据）：
    
    CDS `ccsConfig.xml` 里的 `<ccs>` 元素：
    
    ```xml
-   <ccs url="http://127.0.0.1:8000/api/v4/contests/<contest_id>" user="pta2icpc" password="none"/>
+   <ccs url="http://127.0.0.1:8000/api/v4/contests/<contest_id>" user="admin" password="<setup 生成的密码>"/>
    ```
    
    xcpc-tools `config.server.yaml`：
@@ -79,14 +80,16 @@ python -m venv .venv
    ```yaml
    type: domjudge
    server: http://127.0.0.1:8000
+   username: admin
+   password: <setup 生成的密码>
    ```
 
 ## 配置
 
-程序设置只有一个文件 `manual/config/config.json`（缺失即全部默认）。最小示例：
+程序设置只有一个文件 `manual/config/config.json`（缺失即除 `api_password` 外全部默认；缺 `api_password` 服务拒绝启动）。最小示例：
 
 ```json
-{ "host": "127.0.0.1", "port": 8000 }
+{ "host": "127.0.0.1", "port": 8000, "api_password": "<setup 生成的密码>" }
 ```
 
 字段表与目录布局见 `docs/configuration.md`。所有命令必须在 `pta2icpc/` 目录下运行（路径为相对路径）。
@@ -99,14 +102,14 @@ python -m venv .venv
 | `docs/api.md`              | `/api/v4/` 端点、事件流与定稿、气球契约     |
 | `docs/data-and-setup.md`   | 数据来源与覆盖、setup GUI、打印流水线、语言 id |
 | `docs/troubleshooting.md`  | 常见问题                          |
-| `docs/superpowers/specs/`  | 设计文档（5 篇）                     |
+| `docs/superpowers/specs/`  | 设计文档（6 篇）                     |
 
-设计文档：`docs/superpowers/specs/2026-10-13-pta2icpc-design.md`、`2026-10-15-print-domjudge-design.md`、`2026-10-15-domjudge-balloons-design.md`、`2026-10-15-v4-unify-design.md`、`2026-10-15-cds-finalize-design.md`。
+设计文档：`docs/superpowers/specs/2026-10-13-pta2icpc-design.md`、`2026-10-15-print-domjudge-design.md`、`2026-10-15-domjudge-balloons-design.md`、`2026-10-15-v4-unify-design.md`、`2026-10-15-cds-finalize-design.md`、`2026-10-16-api-basic-auth-design.md`。
 
 ## 开发
 
 - 测试：`.venv/Scripts/python -B -m pytest -q -p no:cacheprovider`（`-B -p no:cacheprovider` 避免留下 `__pycache__`/`.pytest_cache`）。
-- 项目结构：`pta2icpc/`（服务：`app`/`config`/`paths`/`poller`/`store`/`translate`/`scoreboard`/`event_feed`/`balloons`/`printjob`/`models`/`timefmt`/`setup`/`diag_balloons` + `pta/` 子包）、`tests/`（pytest，逐模块对应）。
+- 项目结构：`pta2icpc/`（服务：`app`/`auth`/`config`/`paths`/`poller`/`store`/`translate`/`scoreboard`/`event_feed`/`balloons`/`printjob`/`models`/`timefmt`/`setup`/`diag_balloons` + `pta/` 子包）、`tests/`（pytest，逐模块对应）。
 - 规范：ICPC Contest API 2026-01（https://ccs-specs.icpc.io/2026-01/）；实现说明见 `docs/superpowers/specs/`。
 
 ## 相关项目与致谢

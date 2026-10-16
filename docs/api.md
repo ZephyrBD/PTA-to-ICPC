@@ -2,7 +2,14 @@
 
 [← 返回 README](../README.md)
 
-全部接口统一挂在 `/api/v4/` 前缀下，只读、本机无认证。应用层错误体为 `{"code": <int>, "message": "<str>"}`；框架级错误（未匹配路由 404 / 方法不允许 405 / 参数校验失败 422）仍是 FastAPI 默认的 `{"detail": ...}`。
+全部接口统一挂在 `/api/v4/` 前缀下，只读，`/api/v4/*` 需 **HTTP Basic 认证**。应用层错误体为 `{"code": <int>, "message": "<str>"}`；框架级错误（未匹配路由 404 / 方法不允许 405 / 参数校验失败 422）仍是 FastAPI 默认的 `{"detail": ...}`。
+
+## 认证
+
+- 全部 `/api/v4/*` 端点需 HTTP Basic 认证：用户名固定 `admin`，密码为 `manual/config/config.json` 的 `api_password`（由 setup 随机生成，可在「比赛设置」tab 改）。认证**不可关闭**。
+- 认证失败 → `401`，响应头 `WWW-Authenticate: Basic realm="pta2icpc"`，错误体 `{"code": 401, "message": "authentication required"}`。
+- `/healthz` 与 `/contests*` 旧路径 301 重定向**不**需要认证（本机自检）。
+- Basic over HTTP 为**明文**：仅适用于本机（`127.0.0.1`）或可信网络；跨网部署必须置于 HTTPS 之后（Contest API 2026-01 要求 HTTPS）。`api_password` 是服务级密钥，勿写入任何文档 / 日志 / 提交。
 
 ## 布局：DOMjudge v4 超集 + Contest API 2026-01
 

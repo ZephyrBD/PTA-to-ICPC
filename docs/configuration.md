@@ -4,7 +4,7 @@
 
 ## 程序设置 `manual/config/config.json`
 
-程序设置只有一个文件：`manual/config/config.json`。**文件缺失 → 全部使用默认值**；**文件存在但非法（JSON 解析失败或字段校验失败）→ 打印 `config error: …` 并以退出码 1 退出**。
+程序设置只有一个文件：`manual/config/config.json`。**文件缺失 → 除 `api_password` 外全部使用默认值**；**缺少 `api_password`（键缺失或空字符串）→ 服务入口打印 `api_password not configured …` 并以退出码 1 退出**（先跑 setup）；**文件存在但非法（JSON 解析失败或字段校验失败）→ 打印 `config error: …` 并以退出码 1 退出**。
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
@@ -12,6 +12,7 @@
 | `config_poll_seconds` | `60.0` | 花名册 / 题目 / 比赛元数据等低频数据刷新间隔（秒），必须 > 0 |
 | `host` | `127.0.0.1` | 监听地址 |
 | `port` | `8000` | 监听端口 |
+| `api_password` | （空） | `/api/v4/` HTTP Basic 密码（用户名固定 `admin`）；由 setup 随机生成、可在「比赛设置」tab 改。**必填**：缺失服务拒绝启动 |
 | `pta_requests_per_second` | `2.0` | PTA 全局请求限速（每秒），必须 > 0 |
 | `detail_fetch_per_round` | `5` | 每轮提交详情拉取条数上限，必须 ≥ 0（`0` = 不拉详情） |
 | `fetch_details` | `true` | 是否拉取提交详情（`false` 是比 `detail_fetch_per_round=0` 更粗的总开关） |
@@ -25,7 +26,7 @@
 
 | 路径 | 内容 | 写入者 | 是否 gitignore |
 |---|---|---|---|
-| `manual/config/config.json` | 程序设置（上表） | 手工 | 是（整个 `manual/`） |
+| `manual/config/config.json` | 程序设置（上表，含 `api_password`） | 手工 / setup（接口密码） | 是（整个 `manual/`） |
 | `manual/contest/setup-connection.json` | `contest_id` / `pta_cookie` / 可选 `print_server` | 连接对话框 | 是 |
 | `manual/contest/setup-contest.json` | 比赛时间覆盖 + 定稿规则 | 比赛设置 tab | 是 |
 | `manual/contest/setup-problems.json` | 题目颜色 + 顶层 `print_problem` | 题目颜色 tab | 是 |
@@ -35,7 +36,7 @@
 | `manual/print_sent.json` | 已发送打印 id（运行状态） | 运行时自动 | 是 |
 | `manual/cache/state.json` | 持久化 PTA 快照缓存（运行状态） | 运行时自动 | 是 |
 
-`manual/balloons.json.tmp`、`manual/print_sent.json.tmp`、`manual/cache/state.json.tmp` 是原子写临时文件（写入失败时可能残留）。
+`manual/balloons.json.tmp`、`manual/print_sent.json.tmp`、`manual/cache/state.json.tmp`、`manual/config/config.json.tmp` 是原子写临时文件（写入失败时可能残留）。
 
 启动时自动创建 `manual/`、`manual/config/`、`manual/contest/`、`manual/cache/`（`pta2icpc/paths.py:ensure_dirs`）。
 
@@ -51,5 +52,5 @@
 
 ## 密钥
 
-- `manual/contest/setup-connection.json` 含 PTA cookie（`pta_cookie`）与可选打印服务器 URL，是唯一需要保密的运行文件；整个 `manual/` 已 gitignore。
-- 不要把 cookie 复制进任何文档、日志或提交。
+- `manual/contest/setup-connection.json` 含 PTA cookie（`pta_cookie`）与可选打印服务器 URL；`manual/config/config.json` 含接口密码（`api_password`）。这两者都是密钥载体；整个 `manual/` 已 gitignore。
+- 不要把 cookie 或 `api_password` 复制进任何文档、日志或提交。
