@@ -7,7 +7,7 @@
 > [!WARNING]
 > 本项目仅为 **ICPC Contest API 协议研究与技术演示工具**。
 > 它仅在本地读取账号已可见的比赛数据，将其转译为标准化竞赛接口。
->
+> 
 > 1. 本工具**仅用于技术学习、本地测试**；
 > 2. 禁止在PTA生产环境，使用本工具举办正式竞赛；
 > 3. 使用本工具自动化访问PTA服务，需自行遵守PTA的用户协议；
@@ -66,11 +66,11 @@ uv sync
 
 1. **首次配置**：`uv run pta2icpc-setup` —— 一次性 GUI。首次弹出「比赛连接」对话框填 `contest_id` + PTA cookie（可选打印服务器 URL；比赛中要改可点顶栏「🔗 比赛连接…」）；再设置题目颜色 / 自定义分组 / 打印题 / 座位·队员·教练 / 比赛时间覆盖，保存后写出 `manual/contest/setup-*.json`。可重复运行。「比赛设置」tab 还会生成/保存 `manual/config/config.json` 的接口密码（`/api/v4/` Basic 认证，用户名 `admin`；可「随机重置」/「复制」）。
 
-2. **启动服务**：在 `pta2icpc/` 目录下 `uv run pta2icpc`（没有模块级 `app`，不能用 `uvicorn pta2icpc.app:app`）。启动时控制台会打印接口凭据 `Server View User Info: admin / <密码>`。**未配置接口密码则拒绝启动**（先跑 setup）。
+2. **启动服务**：在 `pta2icpc/` 目录下 `uv run pta2icpc`。
 
-3. **自检**：`curl http://127.0.0.1:8000/healthz`（免认证）；`curl -u admin:<接口密码> http://127.0.0.1:8000/api/v4/`。
+3. **自检**：`curl http://127.0.0.1:8000/healthz`。
 
-4. **接入消费者**（片段里不放任何真实凭据）：
+4. **接入消费者**：
    
    CDS `ccsConfig.xml` 里的 `<ccs>` 元素：
    
@@ -89,30 +89,28 @@ uv sync
 
 ## 配置
 
-程序设置只有一个文件 `manual/config/config.json`（缺失即除 `api_password` 外全部默认；缺 `api_password` 服务拒绝启动）。最小示例：
+程序设置只有一个文件 `manual/config/config.json`。最小示例：
 
 ```json
 { "host": "127.0.0.1", "port": 8000, "api_password": "<setup 生成的密码>" }
 ```
 
-字段表与目录布局见 `docs/configuration.md`。所有命令必须在 `pta2icpc/` 目录下运行（路径为相对路径）。
+字段表与目录布局见 `docs/configuration.md`。
 
 ## 文档
 
-| 文件                         | 内容                            |
-| -------------------------- | ----------------------------- |
-| `docs/configuration.md`    | 设置文件、目录布局、运行要求                |
-| `docs/api.md`              | `/api/v4/` 端点、事件流与定稿、气球契约     |
-| `docs/data-and-setup.md`   | 数据来源与覆盖、setup GUI、打印流水线、语言 id |
-| `docs/troubleshooting.md`  | 常见问题                          |
-| `docs/superpowers/specs/`  | 设计文档（7 篇）                     |
-
-设计文档：`docs/superpowers/specs/2026-10-13-pta2icpc-design.md`、`2026-10-15-print-domjudge-design.md`、`2026-10-15-domjudge-balloons-design.md`、`2026-10-15-v4-unify-design.md`、`2026-10-15-cds-finalize-design.md`、`2026-10-16-api-basic-auth-design.md`、`2026-10-16-logging-and-uv-design.md`。
+| 文件                        | 内容                            |
+| ------------------------- | ----------------------------- |
+| `docs/configuration.md`   | 设置文件、目录布局、运行要求                |
+| `docs/api.md`             | `/api/v4/` 端点、事件流与定稿、气球契约     |
+| `docs/data-and-setup.md`  | 数据来源与覆盖、setup GUI、打印流水线、语言 id |
+| `docs/troubleshooting.md` | 常见问题                          |
+| `docs/superpowers/specs/` | 设计文档（7 篇）                     |
 
 ## 开发
 
-- 测试：`uv run python -B -m pytest -q -p no:cacheprovider`（`-B -p no:cacheprovider` 避免留下 `__pycache__`/`.pytest_cache`）。
-- 项目结构：`pta2icpc/`（服务：`app`/`auth`/`config`/`paths`/`logging_config`/`poller`/`store`/`translate`/`scoreboard`/`event_feed`/`balloons`/`printjob`/`models`/`timefmt`/`setup`/`diag_balloons` + `pta/` 子包）、`tests/`（pytest，逐模块对应）。
+- 测试：`uv run python -B -m pytest -q -p no:cacheprovider`。
+- 
 - 规范：ICPC Contest API 2026-01（https://ccs-specs.icpc.io/2026-01/）；实现说明见 `docs/superpowers/specs/`。
 
 ## 相关项目与致谢
