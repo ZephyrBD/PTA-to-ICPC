@@ -1,6 +1,6 @@
 [project]
 name = "pta2icpc"
-version = "0.4.0"
+version = "0.5.0"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",
@@ -9,7 +9,12 @@ dependencies = [
     "pydantic>=2.10",
 ]
 
-[project.optional-dependencies]
+[project.scripts]
+pta2icpc = "pta2icpc.__main__:main"
+pta2icpc-setup = "pta2icpc.setup:main"
+pta2icpc-diag = "pta2icpc.diag_balloons:main"
+
+[dependency-groups]
 dev = ["pytest>=8.3"]
 
 [build-system]

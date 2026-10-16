@@ -9,14 +9,14 @@
 
 ## 命令
 
-- 测试：`.venv/Scripts/python -B -m pytest -q -p no:cacheprovider`（`-B` + `-p no:cacheprovider` 避免留下 `__pycache__` / `.pytest_cache`）。
-- setup GUI：`.venv/Scripts/python -m pta2icpc.setup`（**禁止在自动化里运行**）。
-- 服务：`.venv/Scripts/python -m pta2icpc`（由用户自行启停，agent 不得擅自启停）。
+- 测试：`uv run python -B -m pytest -q -p no:cacheprovider`（`-B` + `-p no:cacheprovider` 避免留下 `__pycache__` / `.pytest_cache`）。
+- setup GUI：`uv run pta2icpc-setup`（**禁止在自动化里运行**）。
+- 服务：`uv run pta2icpc`（由用户自行启停，agent 不得擅自启停）。
 
 ## 硬约束
 
 - **绝不**提交 / 打印 / 记录 PTA cookie。`manual/contest/setup-connection.json` 与历史 `config.json` 都是密钥载体；`manual/` 整目录已 gitignore。
-- **绝不**提交 / 记录 `api_password`（`manual/config/config.json`）——`/api/v4/` 的 HTTP Basic 密钥，与 PTA cookie 同级。**唯一例外**：服务入口启动时打印 `credentials_banner`（`Server View User Info: admin / <密码>`），供操作者从控制台读取。
+- **绝不**提交 / 记录 `api_password`（`manual/config/config.json`）——`/api/v4/` 的 HTTP Basic 密钥，与 PTA cookie 同级。**唯一例外**：服务入口启动时打印 `credentials_banner`（`Server View User Info: admin / <密码>`），供操作者从控制台读取——**仅控制台输出，绝不写入 `manual/pta2icpc.log`**。
 - 打印流水线会产生**真实硬件**副作用：测试**绝不允许**走打印路径（`manual/print_sent.json`、`printjob.send_job`）。用 `httpx.MockTransport` 等替身。
 - 不擅自启停用户的服务；不改真实状态文件（`manual/` 下的运行文件）。
 - 子代理不得提交 / 推送；测试只能使用 `tmp_path` + `monkeypatch.chdir`。
@@ -25,6 +25,7 @@
 ## 布局不变量
 
 - `pta2icpc/paths.py` 是**唯一**路径来源，路径**不可配置**：不得复活 `Settings.manual_dir`，不得新增 CLI / 环境变量覆盖。
+- 日志统一由 `pta2icpc/logging_config.py` 配置（格式 / stderr + `manual/pta2icpc.log` 轮转），只有入口 `main()` 调用 `configure_logging`；模块内**不得** `basicConfig` / 用 `print` 记日志（`config error:` / `connection not configured …` 等经 `log.error`），也不得新增日志路径 / 级别开关（`LOG_FILE` 固定为 `paths.LOG_FILE`；`diag_balloons.py` 例外：stdlib-only、无 logger、报表走 stdout）。
 - `load_manual` 只 glob 并合并 `manual/contest/*.json`；`manual/config/config.json` **不参与** manual 覆盖合并。
 
 ## 关键契约（改这些代码前必读）
@@ -41,7 +42,7 @@
 
 ## 参考材料
 
-- `docs/superpowers/specs/*`（设计文档，6 篇）。
+- `docs/superpowers/specs/*`（设计文档，7 篇）。
 - 工作区根：`docs/contest-api.md`（Contest API 2026-01 摘录，**仓外**）。
 - 工作区根：`参考项目/`（上游 PTA_BALL 克隆，只读参考）。
 - 致谢 / 参考：[ICPC Contest API 2026-01](https://ccs-specs.icpc.io/2026-01/)、[ICPC Tools](https://github.com/icpctools/icpctools)（[CDS](https://tools.icpc.global/cds/)）、[DOMjudge](https://github.com/DOMjudge/domjudge)（[官网](https://www.domjudge.org/)）、[Hydro/xcpc-tools](https://github.com/hydro-dev/xcpc-tools)、[laobuzhang/PTA_BALL](https://github.com/laobuzhang/PTA_BALL)。
