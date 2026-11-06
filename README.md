@@ -1,6 +1,6 @@
 # PTA to ICPC
 
-![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-0078D6) ![platform](https://img.shields.io/badge/platform-Linux-FCC624) ![platform](https://img.shields.io/badge/platform-macOS-000000) ![tests](https://img.shields.io/badge/tests-550%20passed-brightgreen) ![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
+![python](https://img.shields.io/badge/python-3.13%2B-blue) ![platform](https://img.shields.io/badge/platform-Windows-0078D6) ![platform](https://img.shields.io/badge/platform-Linux-FCC624) ![platform](https://img.shields.io/badge/platform-macOS-000000) ![tests](https://img.shields.io/badge/tests-557%20passed-brightgreen) ![license](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)
 
 把 PTA 上可见的比赛数据转译为 ICPC Contest API 转接服务，供 ICPC Tools 与 Hydro/xcpc-tools 使用。
 

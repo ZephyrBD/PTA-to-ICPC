@@ -22,10 +22,14 @@ class FakeClient:
         self.teams = [{
             "id": ZERO_SUB_TEAM_ID, "name": "无提交队",
             "label": "2022000099",  # roster label = 学号 (task 11)
+            "icpc_id": "2022000099",
             "group_id": "1901545194649161728", "organization_id": "1901545194649161728",
             "organization_name": "DSA_2024",
         }]
         self.teams_calls = 0
+        self.oms_calls = 0
+        self.oms_labels: dict[str, str] = {}
+        self.oms_error: Exception | None = None
         # live-shaped meta: raw freeze input (hidingTime 360 min AFTER
         # start; translate derives 31h − 6h = 25h from the final duration)
         # + contest name + two compilers; times None so the manual
@@ -54,9 +58,19 @@ class FakeClient:
     async def fetch_problems(self):
         return list(self.problems)
 
-    async def fetch_teams(self):
+    async def fetch_oms_seat_labels(self):
+        self.oms_calls += 1
+        if self.oms_error is not None:
+            raise self.oms_error
+        return dict(self.oms_labels)
+
+    async def fetch_teams(self, oms_labels=None):
         self.teams_calls += 1
-        return list(self.teams)
+        self.last_oms_labels = oms_labels
+        # embed seat labels the way PtaClient.fetch_teams does (label→
+        # seat_label keyed by 学号) so translate's precedence is exercised
+        return [dict(t, seat_label=(oms_labels or {}).get(t.get("label")))
+                for t in self.teams]
 
     async def fetch_contest_meta(self):
         self.meta_calls += 1
@@ -145,10 +159,16 @@ def test_need_config_fetches_teams_and_non_config_uses_cached_roster():
     # later round must reuse the cached roster or the zero-submission team
     # would vanish from translate(raw_teams=None) on the next poll.
     poller, client, store = make_poller(config_poll_seconds=60.0)
+    client.oms_labels = {"2022000099": "B212_1"}
     asyncio.run(poller.poll_once())
     assert client.teams_calls == 1
+    # OMS labels are fetched on every config round and handed to the roster
+    assert client.oms_calls == 1
+    assert client.last_oms_labels == {"2022000099": "B212_1"}
+    # seat label wins in translate; the 学号 survives as icpc_id
     snap = store.snapshot()
-    assert ZERO_SUB_TEAM_ID in snap.teams
+    assert snap.teams[ZERO_SUB_TEAM_ID]["label"] == "B212_1"
+    assert snap.teams[ZERO_SUB_TEAM_ID]["icpc_id"] == "2022000099"
     assert snap.organizations["1901545194649161728"]["name"] == "DSA_2024"
     # PTA userGroups no longer mirror into groups; groups are manual-only
     assert "1901545194649161728" not in snap.groups
@@ -156,9 +176,21 @@ def test_need_config_fetches_teams_and_non_config_uses_cached_roster():
     for _ in range(2):  # non-config rounds
         asyncio.run(poller.poll_once())
     assert client.teams_calls == 1  # roster not re-fetched
+    assert client.oms_calls == 1  # seat labels not re-fetched either
     snap = store.snapshot()
     assert ZERO_SUB_TEAM_ID in snap.teams  # cached roster passed to translate
     assert snap.teams[ZERO_SUB_TEAM_ID]["name"] == "无提交队"
+
+
+def test_oms_failure_fails_whole_config_round():
+    # a broken OMS fetch must never yield a half-seated roster: the config
+    # round raises out of poll_once and is retried next cycle
+    poller, client, store = make_poller(config_poll_seconds=60.0)
+    client.oms_error = RuntimeError("oms down")
+    asyncio.run(poller.poll_once())
+    assert client.teams_calls == 0  # roster never fetched without seats
+    assert store.snapshot() is None
+    assert poller.status["ready"] is False
 
 
 def test_empty_roster_on_config_round_keeps_previous_cache(caplog):

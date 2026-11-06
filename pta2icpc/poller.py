@@ -569,9 +569,14 @@ class Poller:
             raw_problems: list[dict] = []
             if need_config:
                 raw_problems = await self.client.fetch_problems()
+                # OMS seat labels (考场名_座位号) come from a different
+                # host and must be in hand before the roster is normalized;
+                # a failure raises → whole poll cycle retried (never a
+                # half-seated roster), same semantics as fetch_teams.
+                oms_labels = await self.client.fetch_oms_seat_labels()
                 # failure raises → whole poll cycle retried (never a
                 # partial roster)
-                fetched = await self.client.fetch_teams()
+                fetched = await self.client.fetch_teams(oms_labels=oms_labels)
                 if fetched or not self._last_teams:
                     self._last_teams = fetched
                 else:

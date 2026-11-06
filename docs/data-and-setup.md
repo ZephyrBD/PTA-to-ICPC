@@ -10,6 +10,7 @@
 - 封榜时长（`hideScoreboard` + `hidingTime`，按「**开赛后** X 分钟」换算）。**始终基于最终生效的 duration 计算**：显式 duration 优先，无显式时用 PTA duration，两者都缺时用内置默认 `5:00:00`。因此 manual 覆盖 duration 后封榜时刻仍正确。
 - 全部可用编译器 → `/languages`（38 种，随 PTA 配置变化）。
 - 题目列表、全量选手花名册 → `/teams`；PTA 用户组只映射到 `/organizations`（学校），**不**生成 `/groups`。
+- **OMS 座位号**（`考场名_座位号`，如 `B212_7`）：`GET /api/problem-sets/{id}/connections` 拿到 `omsExamId` 后，从 `oms.pintia.cn` 拉 `/api/exams/{examId}/locations`（考场名）与 `/api/exams/{examId}/examinees/`（`username`==学号、`seatNumber` 考场内从 1 连续，live-verified 2026-11-06 蓝桥杯校赛 579/579 学号全匹配）。花名册的 `team.label` 仍是学号，座位号以 `seat_label` 随行：`teams[].label` = `seat_label`（缺失时回退学号），学号保底落在 `teams[].icpc_id`；manual `seat` 覆盖仍最优先。未关联 OMS 的比赛行为完全不变。细节见工作区 `docs/pta-oms-api.md`。
 
 ## 覆盖优先级
 

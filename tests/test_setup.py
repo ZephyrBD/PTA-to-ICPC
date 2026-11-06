@@ -216,8 +216,14 @@ class _StubClient:
     async def fetch_problems(self):
         return [{"id": "A", "label": "A", "title": "题A", "ordinal": 1}]
 
-    async def fetch_teams(self):
-        return [{"id": "t1", "name": "甲", "label": "2023001"}]
+    async def fetch_oms_seat_labels(self):
+        return {"2023001": "B212_7"}
+
+    async def fetch_teams(self, oms_labels=None):
+        self.oms_labels = oms_labels
+        return [{"id": "t1", "name": "甲", "label": "2023001",
+                 "seat_label": (oms_labels or {}).get("2023001"),
+                 "icpc_id": "2023001"}]
 
     async def fetch_contest_meta(self):
         return {"name": "赛", "startAt": "2026-10-13T08:00:00Z",
@@ -225,9 +231,13 @@ class _StubClient:
 
 
 def test_fetch_setup_data_returns_problems_teams_and_meta():
-    problems, teams, meta = asyncio.run(fetch_setup_data(_StubClient()))
+    client = _StubClient()
+    problems, teams, meta = asyncio.run(fetch_setup_data(client))
     assert problems[0]["label"] == "A"
     assert teams[0]["id"] == "t1"
+    # OMS labels fetched BEFORE the roster so seat_label can be embedded
+    assert client.oms_labels == {"2023001": "B212_7"}
+    assert teams[0]["seat_label"] == "B212_7"
     assert meta["durationSeconds"] == 111600
 
 
@@ -360,6 +370,22 @@ def test_build_team_rows_default_meta_is_empty():
     assert rows[0]["seat"] == ""
     assert rows[0]["members"] == []
     assert rows[0]["coaches"] == []
+
+
+def test_build_team_rows_seat_label_prefills_and_saved_wins():
+    # OMS seat label (考场名_座位号) prefills the 座位号 column when no
+    # manual seat was saved; an explicit saved seat wins (manual override)
+    teams = [{"id": "t1", "name": "甲", "label": "2023001",
+              "seat_label": "B212_7", "icpc_id": "2023001"},
+             {"id": "t2", "name": "乙", "label": "2023002",
+              "seat_label": "B212_8", "icpc_id": "2023002"}]
+    saved = {"t2": {"seat": "手工座位"}}
+    rows = build_team_rows(teams, {}, saved)
+    by_id = {r["id"]: r for r in rows}
+    assert by_id["t1"]["seat"] == "B212_7"
+    assert by_id["t2"]["seat"] == "手工座位"
+    # 学号 column stays the roster label — the seat label never leaks there
+    assert by_id["t1"]["label"] == "2023001"
 
 
 def test_build_teams_setup_omits_empty_values():

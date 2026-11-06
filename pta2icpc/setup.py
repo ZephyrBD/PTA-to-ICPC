@@ -150,8 +150,12 @@ def build_team_rows(teams, groups, saved_assignments) -> list[dict]:
     ``group_ids`` prefill from ``saved_assignments`` (team_id → {group_ids});
     ``group_names`` is the comma-joinable display form resolved via ``groups``
     (unknown ids fall back to the id itself). ``seat``/``members``/``coaches``
-    also prefill from the same saved entry (defaults ""/[] when absent).
-    Read-only org columns come from the PTA roster.
+    also prefill from the same saved entry (defaults ""/[] when absent); the
+    OMS seat label (`考场名_座位号`, roster ``seat_label``) prefills the
+    座位号 column when no manual seat was saved, so it is visible and
+    editable in the dialog (persisting it on save is intended — the file is
+    the manual override channel). Read-only org columns come from the PTA
+    roster.
     """
     rows: list[dict] = []
     for t in teams or []:
@@ -168,7 +172,7 @@ def build_team_rows(teams, groups, saved_assignments) -> list[dict]:
                 t.get("organization_name") or t.get("organization_id") or ""),
             "group_ids": gids,
             "group_names": names,
-            "seat": str(saved.get("seat") or ""),
+            "seat": str(saved.get("seat") or t.get("seat_label") or ""),
             "members": [str(m) for m in saved.get("members") or []],
             "coaches": [str(c) for c in saved.get("coaches") or []],
         })
@@ -208,9 +212,16 @@ def build_teams_setup(assignments, team_meta) -> dict:
 
 
 async def fetch_setup_data(client) -> tuple[list[dict], list[dict], dict]:
-    """One-shot fetch of (problems, teams, contest meta) from PTA."""
+    """One-shot fetch of (problems, teams, contest meta) from PTA.
+
+    The roster carries the OMS seat label (`考场名_座位号`) when the
+    problem set is linked to an OMS exam — fetched first so fetch_teams
+    can embed it; without a link the labels are None and everything
+    falls back to the plain 学号 behavior.
+    """
     problems = await client.fetch_problems()
-    teams = await client.fetch_teams()
+    oms_labels = await client.fetch_oms_seat_labels()
+    teams = await client.fetch_teams(oms_labels=oms_labels)
     meta = await client.fetch_contest_meta()
     return problems, teams, meta
 

@@ -58,8 +58,8 @@ def fetch_problems(client: PtaClient) -> list[dict]:
     return asyncio.run(_run(client, client.fetch_problems()))
 
 
-def fetch_teams(client: PtaClient) -> list[dict]:
-    return asyncio.run(_run(client, client.fetch_teams()))
+def fetch_teams(client: PtaClient, oms_labels=None) -> list[dict]:
+    return asyncio.run(_run(client, client.fetch_teams(oms_labels=oms_labels)))
 
 
 def fetch_contest_meta(client: PtaClient) -> dict:
@@ -430,16 +430,18 @@ def test_fetch_teams_normalizes_roster():
         # 2026-10-14), group = org = raw group id
         assert team["name"] == stu["name"]
         assert team["label"] == stu["studentNumber"]
+        assert team["icpc_id"] == stu["studentNumber"]
+        assert team["seat_label"] is None  # no OMS labels passed
         assert team["group_id"] == gid
         assert team["organization_id"] == gid
         assert team["organization_name"] == payload["userGroups"][gid]["name"]
-    # student numbers are emitted ONLY as label values — never in id/name
-    # (or any other field of the team row)
+    # student numbers are emitted ONLY as label and icpc_id values — never
+    # in id/name (or any other field of the team row)
     numbers = {stu["studentNumber"] for stu in payload["studentUserById"].values()}
     assert numbers <= {t["label"] for t in teams}  # every number is a label
     for t in teams:
         for key, value in t.items():
-            if key != "label":
+            if key not in ("label", "icpc_id"):
                 assert not any(sn in str(value) for sn in numbers)
     org_names = {t["organization_name"] for t in teams}
     assert org_names == {g["name"] for g in payload["userGroups"].values()}
@@ -482,6 +484,80 @@ def test_fetch_teams_sanitizes_group_id_with_space():
     assert teams[0]["group_id"] == "G-1"
     assert teams[0]["organization_id"] == "G-1"
     assert teams[0]["organization_name"] == "机房 1"
+
+
+def _run_oms(client: PtaClient) -> dict[str, str]:
+    return asyncio.run(_run(client, client.fetch_oms_seat_labels()))
+
+
+def test_fetch_oms_seat_labels_builds_room_seat_map():
+    """connections → omsExamId → locations (examLocationId → room name via
+    locationById) → paged examinees; username == 学号, label = 考场名_座位号
+    (live-verified 2026-11-06)."""
+    calls: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        calls.append(url)
+        if "/connections" in url:
+            return httpx.Response(200, json={"omsExamId": "E1",
+                                             "courseIds": []})
+        if url.endswith("/locations"):
+            return httpx.Response(200, json={
+                "examLocations": [
+                    {"id": "EL1", "examId": "E1", "locationId": "R1"},
+                    {"id": "EL2", "examId": "E1", "locationId": "R2"},
+                ],
+                "locationById": {
+                    "R1": {"id": "R1", "name": "B212", "maxSeatNumber": 40},
+                    "R2": {"id": "R2", "name": "H5207", "maxSeatNumber": 100},
+                }})
+        assert "/examinees/" in url
+        page = int(request.url.params.get("page"))
+        limit = int(request.url.params.get("limit"))
+        rows = [
+            {"id": f"X{page}{i}", "name": f"生{page}{i}",
+             "username": f"sn{page}{i}", "seatNumber": page * limit + i + 1,
+             "examLocationId": "EL1" if i % 2 == 0 else "EL2"}
+            for i in range(20 if page == 0 else 5)]  # short page → stop
+        return httpx.Response(200, json={"total": 25, "examinees": rows})
+
+    labels = _run_oms(make_client(handle, page_limit=20))
+    # paged: 20 then 5, stop on the short page
+    assert sum(1 for c in calls if "/examinees/" in c) == 2
+    assert labels["sn04"] == "B212_5"      # even row index → room EL1
+    assert labels["sn015"] == "H5207_16"   # odd row index → room EL2
+    assert len(labels) == 25
+
+
+def test_fetch_oms_seat_labels_no_oms_link_is_empty_not_error():
+    """A problem set without an OMS connection returns {} and must not hit
+    any OMS endpoint (legitimate no-seat contest)."""
+    hits: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        hits.append(str(request.url))
+        return httpx.Response(200, json={"courseIds": [],
+                                         "levelChallengeIds": []})
+
+    assert _run_oms(make_client(handle)) == {}
+    assert len(hits) == 1 and "/connections" in hits[0]
+
+
+def test_fetch_teams_oms_labels_embed_seat_label_and_icpc_id():
+    payload = load_members()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    numbers = {stu["studentNumber"]
+               for stu in payload["studentUserById"].values()}
+    oms = {n: f"B212_{i + 1}" for i, n in enumerate(sorted(numbers))}
+    teams = fetch_teams(make_client(handle), oms_labels=oms)
+    by_label = {t["label"]: t for t in teams}
+    for n in sorted(numbers):
+        assert by_label[n]["seat_label"] == oms[n]
+        assert by_label[n]["icpc_id"] == n
 
 
 def test_fetch_teams_missing_group_id_is_none():

@@ -878,6 +878,27 @@ def test_empty_seat_keeps_roster_label():
     assert data.teams["1901545194649161728"]["label"] == "2022000001"
 
 
+def test_oms_seat_label_wins_and_student_number_survives_as_icpc_id():
+    # OMS seat label (考场名_座位号) drives team.label; the 学号 roster
+    # label survives as icpc_id (user decision 2026-11-06). Manual seat
+    # (applied above the roster) still wins over both.
+    roster = [dict(ROSTER[0], seat_label="B212_7", icpc_id="2022000001")]
+    data = translate("999", MANUAL, [], [], roster, NOW)
+    assert data.teams["1901545194649161728"]["label"] == "B212_7"
+    assert data.teams["1901545194649161728"]["icpc_id"] == "2022000001"
+
+    manual = dict(MANUAL, teams={"1901545194649161728": {"seat": "手改"}})
+    data = translate("999", manual, [], [], roster, NOW)
+    assert data.teams["1901545194649161728"]["label"] == "手改"
+
+
+def test_oms_seat_label_none_keeps_roster_label():
+    # no OMS link (seat_label None) → plain 学号 label, unchanged behavior
+    roster = [dict(ROSTER[0], seat_label=None)]
+    data = translate("999", MANUAL, [], [], roster, NOW)
+    assert data.teams["1901545194649161728"]["label"] == "2022000001"
+
+
 def test_team_object_never_carries_seat_members_coaches():
     manual = dict(MANUAL, teams={"D22": {"seat": "A12", "members": ["甲", "乙"],
                                          "coaches": ["丙"]}})

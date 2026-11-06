@@ -355,7 +355,11 @@ def translate(contest_id: str, manual: dict, raw_submissions: list[dict],
         tid = sanitize_id(str(row["id"]))
         team = data.teams.setdefault(tid, {"id": tid})
         team.setdefault("name", str(row.get("name") or tid))
-        team.setdefault("label", str(row.get("label") or tid))
+        # OMS seat label (`考场名_座位号`, user decision 2026-11-06) wins
+        # over the 学号 roster label; the 学号 itself survives as icpc_id.
+        # Manual seat overrides still win — they were applied above.
+        team.setdefault("label", str(row.get("seat_label")
+                                     or row.get("label") or tid))
         # ids sanitized once here so team refs and organizations keys always
         # agree (client normalizes too; sanitize is idempotent). PTA user
         # groups feed organization_id + organizations ONLY; `groups` is a

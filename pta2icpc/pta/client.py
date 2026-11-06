@@ -124,7 +124,8 @@ class PtaClient:
                  transport: httpx.AsyncBaseTransport | None = None,
                  page_limit: int = 50,
                  requests_per_second: float = 2.0,
-                 request_jitter: float = 0.0):
+                 request_jitter: float = 0.0,
+                 oms_base_url: str = "https://oms.pintia.cn"):
         self.submissions_url = (
             f"{base_url}/api/problem-sets/{contest_id}/submissions")
         # per-submission detail (source code + per-case runs)
@@ -137,6 +138,11 @@ class PtaClient:
             f"{base_url}/api/problem-sets/{contest_id}/members")
         self.contest_meta_url = (
             f"{base_url}/api/problem-sets/{contest_id}")
+        self.connections_url = (
+            f"{base_url}/api/problem-sets/{contest_id}/connections")
+        # OMS（监考系统）与 pintia.cn 同一套 PTASession（domain
+        # .pintia.cn）；座位号数据只在这里有（live-verified 2026-11-06）。
+        self.oms_base_url = oms_base_url.rstrip("/")
         self._tz = tz
         self._page_limit = page_limit
         # Global rate gate: every HTTP request (list pages, details, config)
@@ -349,15 +355,85 @@ class PtaClient:
         return {"program": program, "compiler": compiler,
                 "run_results": run_results}
 
-    async def fetch_teams(self) -> list[dict]:
+    async def fetch_oms_seat_labels(self) -> dict[str, str]:
+        """学号 → ``"考场名_座位号"`` from the OMS exam linked to this
+        problem set.
+
+        Chain (live-verified 2026-11-06 against 蓝桥杯校赛 exam
+        1996503223647879168): GET /connections → ``omsExamId`` (key absent
+        = no OMS link → legitimate empty result, NOT an error); then
+        GET oms /api/exams/{examId}/locations (``examLocations`` rows join
+        to ``locationById`` by ``locationId`` for the room ``name``); then
+        the paged GET oms /api/exams/{examId}/examinees/ (page/limit with a
+        real ``total``, like /members). ``examinee.username`` == PTA
+        ``studentUser.studentNumber`` (579/579 roster match; the only gap
+        was an OMS-side Test account) and ``seatNumber`` is a dense
+        1..N integer per room, so ``考场名_座位号`` is globally unique.
+        ``seatNumber`` is guarded with ``in (None, "")`` (never ``not
+        seat``) so a genuine 0 — should OMS ever emit one — is kept as
+        ``room_0`` instead of being treated as "unassigned".
+        HTTP/auth errors propagate — the caller owns the fallback decision
+        (poller: whole config round retried, never a half-seated roster).
+        """
+        conn = await self._get_json(self.connections_url)
+        exam_id = conn.get("omsExamId")
+        if not exam_id:
+            return {}
+        locs = await self._get_json(
+            f"{self.oms_base_url}/api/exams/{exam_id}/locations")
+        room_by_location = {
+            str(loc.get("id")):
+                str(((locs.get("locationById") or {})
+                     .get(loc.get("locationId")) or {}).get("name")
+                    or loc.get("locationId") or loc.get("id"))
+            for loc in locs.get("examLocations") or []}
+        examinees: list[dict] = []
+        total = 0
+        for page in range(MAX_MEMBERS_PAGES):
+            data = await self._get_json(
+                f"{self.oms_base_url}/api/exams/{exam_id}/examinees/",
+                params={"page": page, "limit": self._page_limit})
+            total = int(data.get("total") or 0)
+            rows = data.get("examinees") or []
+            examinees.extend(rows)
+            if len(rows) < self._page_limit:
+                break
+        if total > 0 and len(examinees) < total:
+            log.warning("OMS examinees truncated: fetched %d of %d",
+                        len(examinees), total)
+        labels: dict[str, str] = {}
+        for e in examinees:
+            username = str(e.get("username") or "")
+            seat = e.get("seatNumber")
+            if not username or seat in (None, ""):
+                continue
+            room = room_by_location.get(str(e.get("examLocationId")), "")
+            if not room:
+                # opaque locationId in a volunteer-facing label is worse
+                # than a bare seat number; warn so a flaky `locations`
+                # payload stays visible instead of silently degrading
+                log.warning("OMS examinee %s has no room name (examLocation "
+                            "%s); falling back to bare seat %s",
+                            username, e.get("examLocationId"), seat)
+            label = f"{room}_{seat}" if room else str(seat)
+            if username in labels and labels[username] != label:
+                log.warning("OMS duplicate examinee username %s: %s -> %s",
+                            username, labels[username], label)
+            labels[username] = label
+        return labels
+
+    async def fetch_teams(self, oms_labels: dict[str, str] | None = None
+                          ) -> list[dict]:
         """Full roster from the /members endpoint.
 
         Page/limit pagination with a real `total` (NOT the submissions
         cursor): loop while a page returns exactly `limit` rows, with a
         sane page-count guard; warn when `total` says rows were missed.
         Every member becomes a team — id = studentUserId (sanitized;
-        digits pass through), name = 姓名, label = 学号 (falls back to
-        姓名 when the student number is missing; user decision 2026-10-14),
+        digits pass through), name = 姓名. `label` stays 学号 (user
+        decision 2026-10-14); the OMS seat label `考场名_座位号` (user
+        decision 2026-11-06) rides along as `seat_label` and wins in
+        translate, while the 学号 moves to `icpc_id` so it is never lost.
         group_id = organization_id = sanitized userGroupId (None when the
         member has none).
         """
@@ -396,9 +472,11 @@ class PtaClient:
                 continue
             team_id = sanitize_id(str(raw_team_id))
             name = str(stu.get("name") or nick.get("nickname") or "")
-            label = str(stu.get("studentNumber") or name)
+            student_number = str(stu.get("studentNumber") or "")
             out.setdefault(team_id, {
-                "id": team_id, "name": name, "label": label,
+                "id": team_id, "name": name, "label": student_number or name,
+                "seat_label": (oms_labels or {}).get(student_number),
+                "icpc_id": student_number or None,
                 "group_id": gid, "organization_id": gid,
                 "organization_name": groups.get(gid, gid) if gid else None,
             })
