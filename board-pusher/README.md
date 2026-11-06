@@ -29,6 +29,36 @@ PUT https://cuitboard.pages.dev/api/live/data/data/<比赛id>/*.json
 `openssl rand -hex 32` 生成后提供）。**本目录任何文件不得写入真实 token /
 api_password**，一律走环境变量或命令行参数。
 
+## 赛前清单（按顺序做一遍）
+
+1. **拿 token**：向 board 部署者索取 `LIVE_PUSH_TOKEN`，导出环境变量：
+   ```bash
+   export PTA2ICPC_PASSWORD=<pta2icpc manual/config/config.json 里的 api_password>
+   export CUITBOARD_TOKEN=<LIVE_PUSH_TOKEN>
+   ```
+2. **pta2icpc 就绪**：`uv sync` 后用 `uv run pta2icpc-setup` 配好 PTA
+   连接、比赛设置、队伍名单；`uv run pta2icpc` 启动服务（比赛期间保持
+   运行）。自检：
+   ```bash
+   curl -u admin:<api_password> http://127.0.0.1:8000/api/v4/contests
+   ```
+3. **生成登记/归档文件**（在 `board-pusher/` 目录下，比赛 id 全程一致）：
+   ```bash
+   python push_board.py --contest-id <比赛id> --teams-only --emit-index
+   python push_board.py --contest-id <比赛id> --teams-only --dump-data
+   ```
+4. **合入 xcpcio 仓库并 push**（静态构建，与 KV 无关）：
+   - `contest_list.json` 的条目 → `packages/apps/board/public/data/index/contest_list.json`
+   - `config.json` / `team.json` → `packages/apps/board/public/data/icpc/<年份>/<比赛id>/`
+5. **验证空榜**：Pages 构建完成后打开
+   `https://cuitboard.pages.dev/icpc/<年份>/<比赛id>`，应看到全部队伍 0 题。
+6. **清残留 run.json**（KV 里如有旧数据会让空榜不空）：
+   ```bash
+   python push_board.py --contest-id <比赛id> --once
+   ```
+   此时会推一轮全量（run.json 为空数组），config/team 也随首轮进 KV。
+7. 比赛开始后进入[实时推送](#用法)循环（步骤 2）。
+
 ## 用法
 
 ```bash
@@ -41,7 +71,7 @@ python push_board.py --contest-id <比赛id> --teams-only --emit-index
 #    config.json / team.json：归档进 public/data/icpc/<年份>/<比赛id>/
 python push_board.py --contest-id <比赛id> --teams-only --dump-data
 
-# 1) 比赛前登记一次（只推 config/team，不进循环）
+# 1) 赛前预推一轮 config/team + 空 run（清单第 6 步）
 python push_board.py --contest-id <比赛id> --teams-only
 
 # 2) 比赛期间实时推送（默认 10 秒一轮，站点要求 >=5 秒）
