@@ -220,6 +220,18 @@ class Pusher:
         print(f"[index] 已生成 {path}（icpc/{year}/{self.args.contest_id}），"
               f"请手动合入 xcpcio 仓库后 git push 触发静态构建")
 
+    def dump_data(self, config: dict) -> None:
+        """在当前目录生成 config.json 与 team.json（赛前归档用）。"""
+        with open("config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=4)
+            f.write("\n")
+        teams = self.fetch_teams()
+        with open("team.json", "w", encoding="utf-8") as f:
+            json.dump(teams, f, ensure_ascii=False, indent=4)
+            f.write("\n")
+        print(f"[dump] config.json（{len(config['problem_id'])} 题）、"
+              f"team.json（{len(teams)} 队）已生成到当前目录")
+
     # ---- 推送 -------------------------------------------------------------
 
     def push(self, filename: str, payload) -> None:
@@ -257,6 +269,9 @@ def main() -> int:
     ap.add_argument("--emit-index", action="store_true",
                     help="在当前目录生成孤立的 contest_list.json"
                          "（只含本比赛条目，手动合入 xcpcio 仓库）")
+    ap.add_argument("--dump-data", action="store_true",
+                    help="在当前目录生成 config.json / team.json"
+                         "（赛前归档进 xcpcio 仓库用）")
     ap.add_argument("--interval", type=float, default=10.0,
                     help="推送间隔秒数，默认 10（站点要求 >=5）")
     ap.add_argument("--once", action="store_true", help="只推一轮就退出")
@@ -290,20 +305,24 @@ def main() -> int:
 
     pusher = Pusher(args)
     interval = max(args.interval, 5.0)
-    index_done = False
+    first = True
 
     while True:
         try:
             config, runs = pusher.collect()
-            # contest_list.json 只需要登记一次；循环里重复写无意义
-            if args.emit_index and not index_done:
+            # 以下三类都是赛前一次性动作：
+            # contest_list.json 登记、config/team 归档文件生成
+            if args.emit_index and first:
                 pusher.update_index(config)
-                index_done = True
+            if args.dump_data:
+                pusher.dump_data(config)
             if not args.teams_only:
                 pusher.push("run.json", runs)
-            # team.json 每轮都推：队伍列表比赛期间偶有补录，代价很小
-            pusher.push("team.json", pusher.fetch_teams())
-            pusher.push("config.json", config)
+            # config/team 比赛期间不变，只在首轮推一次；
+            # 归档版走 --dump-data（队名补录等变化由归档 push 覆盖）
+            if first:
+                pusher.push("team.json", pusher.fetch_teams())
+                pusher.push("config.json", config)
         except urllib.error.HTTPError as e:
             print(f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}",
                   file=sys.stderr)
@@ -314,6 +333,7 @@ def main() -> int:
 
         if args.once or args.teams_only:
             return 0
+        first = False
         time.sleep(interval)
 
 

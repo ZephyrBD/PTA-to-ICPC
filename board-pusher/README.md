@@ -35,11 +35,11 @@ api_password**，一律走环境变量或命令行参数。
 export PTA2ICPC_PASSWORD=<pta2icpc manual/config/config.json 里的 api_password>
 export CUITBOARD_TOKEN=<LIVE_PUSH_TOKEN>
 
-# 0) 一次性登记：在当前目录生成孤立的 contest_list.json
+# 0) 赛前一次性登记/归档（都要在 xcpcio 仓库手动合入 + git push 走静态构建）：
+#    contest_list.json：孤立条目，手动合入 public/data/index/contest_list.json
 python push_board.py --contest-id <比赛id> --teams-only --emit-index
-# 生成的是只含本比赛条目的完整结构，手动合入 xcpcio 仓库
-# packages/apps/board/public/data/index/contest_list.json 后 git push
-# 触发一次静态构建
+#    config.json / team.json：归档进 public/data/icpc/<年份>/<比赛id>/
+python push_board.py --contest-id <比赛id> --teams-only --dump-data
 
 # 1) 比赛前登记一次（只推 config/team，不进循环）
 python push_board.py --contest-id <比赛id> --teams-only
@@ -64,11 +64,13 @@ python push_board.py --contest-id <比赛id> --delete-only
 | `--interval` | `10` | 推送间隔（秒，最低 5） |
 | `--once` | — | 只推一轮就退出（测试用） |
 | `--emit-index` | — | 在当前目录生成孤立的 contest_list.json（登记用） |
+| `--dump-data` | — | 在当前目录生成 config.json / team.json（归档用） |
 | `--teams-only` | — | 只推 config/team |
 | `--delete-only` | — | 删除 KV 里的三个文件（归档清理用） |
 
-行为细节：401（token / 密码错误）直接退出；其它 HTTP / 网络错误打印后
-等下一轮重试。
+行为细节：config/team 视为赛前定稿的不变量，推送循环里只在首轮推一次，
+之后每轮只推 run.json；401（token / 密码错误）直接退出；其它 HTTP /
+网络错误打印后等下一轮重试。
 
 ## 本地调试
 
