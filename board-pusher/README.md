@@ -35,11 +35,11 @@ api_password**，一律走环境变量或命令行参数。
 export PTA2ICPC_PASSWORD=<pta2icpc manual/config/config.json 里的 api_password>
 export CUITBOARD_TOKEN=<LIVE_PUSH_TOKEN>
 
-# 0) 一次性登记：直接生成条目并合并进 contest_list.json
-python push_board.py --contest-id <比赛id> --teams-only \
-    --emit-index ../xcpcio/packages/apps/board/public/data/index/contest_list.json
-# 该文件在 xcpcio 仓库里，改完需 git push 触发一次静态构建
-# （--emit-index 会就地合并，保留文件里已有的其它比赛）
+# 0) 一次性登记：在当前目录生成孤立的 contest_list.json
+python push_board.py --contest-id <比赛id> --teams-only --emit-index
+# 生成的是只含本比赛条目的完整结构，手动合入 xcpcio 仓库
+# packages/apps/board/public/data/index/contest_list.json 后 git push
+# 触发一次静态构建
 
 # 1) 比赛前登记一次（只推 config/team，不进循环）
 python push_board.py --contest-id <比赛id> --teams-only
@@ -63,7 +63,7 @@ python push_board.py --contest-id <比赛id> --delete-only
 | `--medal` | 上届正式队配置 | 奖项 JSON |
 | `--interval` | `10` | 推送间隔（秒，最低 5） |
 | `--once` | — | 只推一轮就退出（测试用） |
-| `--emit-index` | — | 生成/合并 contest_list.json 条目到指定路径（登记用） |
+| `--emit-index` | — | 在当前目录生成孤立的 contest_list.json（登记用） |
 | `--teams-only` | — | 只推 config/team |
 | `--delete-only` | — | 删除 KV 里的三个文件（归档清理用） |
 
