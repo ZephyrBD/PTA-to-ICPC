@@ -388,6 +388,43 @@ def test_build_team_rows_seat_label_prefills_and_saved_wins():
     assert by_id["t1"]["label"] == "2023001"
 
 
+def test_build_team_rows_refetch_refreshes_echoed_seat_but_keeps_manual():
+    # Reproduces the "座位号 didn't come back" bug: a refetch feeds the
+    # PREVIOUS round's displayed seats back in as `saved` (build_teams_setup
+    # echoes team_meta). An echoed OMS label must NOT count as a manual
+    # override — the freshly fetched seat_label wins; a hand-typed seat
+    # (different from what was displayed) still wins over the OMS label.
+    teams = [{"id": "t1", "name": "甲", "label": "2023001",
+              "seat_label": "B212_9"},   # OMS reassigned 7 → 9
+             {"id": "t2", "name": "乙", "label": "2023002",
+              "seat_label": "B212_8"}]
+    saved = {"t1": {"seat": "B212_7"},           # echo of last round
+             "t2": {"seat": "手改座位"}}          # real manual override
+    previous_seats = {"t1": "B212_7", "t2": "B212_8"}
+    rows = build_team_rows(teams, {}, saved, previous_seats=previous_seats)
+    by_id = {r["id"]: r for r in rows}
+    assert by_id["t1"]["seat"] == "B212_9"     # OMS refresh wins, not frozen
+    assert by_id["t2"]["seat"] == "手改座位"     # manual override kept
+
+
+def test_build_team_rows_echoed_seat_falls_back_when_oms_gone():
+    # An echoed seat whose OMS label disappeared (exam unlinked) must not
+    # resurrect the stale value
+    teams = [{"id": "t1", "name": "甲", "label": "2023001",
+              "seat_label": None}]
+    saved = {"t1": {"seat": "B212_7"}}
+    rows = build_team_rows(teams, {}, saved, previous_seats={"t1": "B212_7"})
+    assert rows[0]["seat"] == ""
+
+
+def test_build_team_rows_previous_seats_defaults_to_none():
+    # first launch: no previous round, so any saved seat is a real override
+    teams = [{"id": "t1", "name": "甲", "label": "2023001",
+              "seat_label": "B212_7"}]
+    rows = build_team_rows(teams, {}, {"t1": {"seat": "B212_7"}})
+    assert rows[0]["seat"] == "B212_7"
+
+
 def test_build_teams_setup_omits_empty_values():
     assignments = {"t1": set(), "t2": {"g1"}, "t3": set()}
     team_meta = {"t1": {"seat": "", "members": [], "coaches": []},

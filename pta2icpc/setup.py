@@ -144,7 +144,8 @@ def toggle_print_problem(problem_rows, idx) -> None:
         row["print"] = new_val and i == idx
 
 
-def build_team_rows(teams, groups, saved_assignments) -> list[dict]:
+def build_team_rows(teams, groups, saved_assignments,
+                    previous_seats=None) -> list[dict]:
     """Team rows for the group tab, sorted by 学号.
 
     ``group_ids`` prefill from ``saved_assignments`` (team_id → {group_ids});
@@ -156,13 +157,22 @@ def build_team_rows(teams, groups, saved_assignments) -> list[dict]:
     editable in the dialog (persisting it on save is intended — the file is
     the manual override channel). Read-only org columns come from the PTA
     roster.
-    """
+
+    ``previous_seats`` (team_id → seat shown last round) is what a refetch
+    passes: a saved seat EQUAL to it is not a real manual override, it is
+    just what the GUI echoed back last time (an OMS label included), so the
+    fresh ``seat_label`` wins instead of being frozen at the old value."""
     rows: list[dict] = []
+    previous_seats = previous_seats or {}
     for t in teams or []:
         tid = str(t["id"])
         saved = (saved_assignments or {}).get(tid) or {}
         gids = list(saved.get("group_ids") or [])
         names = [str((groups.get(g) or {}).get("name") or g) for g in gids]
+        seat = str(saved.get("seat") or "").strip()
+        prev = str(previous_seats.get(tid) or "").strip()
+        if seat and seat == prev:
+            seat = ""  # echoed, not hand-entered → let the OMS label win
         rows.append({
             "id": tid,
             "label": str(t.get("label") or tid),
@@ -172,7 +182,7 @@ def build_team_rows(teams, groups, saved_assignments) -> list[dict]:
                 t.get("organization_name") or t.get("organization_id") or ""),
             "group_ids": gids,
             "group_names": names,
-            "seat": str(saved.get("seat") or t.get("seat_label") or ""),
+            "seat": seat or t.get("seat_label") or "",
             "members": [str(m) for m in saved.get("members") or []],
             "coaches": [str(c) for c in saved.get("coaches") or []],
         })
@@ -220,6 +230,10 @@ async def fetch_setup_data(client) -> tuple[list[dict], list[dict], dict]:
     falls back to the plain 学号 behavior.
     """
     problems = await client.fetch_problems()
+    # OMS seat labels (考场名_座位号) come from a different host and must be
+    # in hand before the roster is normalized; a failure raises → the whole
+    # fetch fails and the GUI reports it (never a half-seated roster), same
+    # semantics as fetch_teams.
     oms_labels = await client.fetch_oms_seat_labels()
     teams = await client.fetch_teams(oms_labels=oms_labels)
     meta = await client.fetch_contest_meta()
@@ -320,11 +334,13 @@ def render_team_seat(team_meta: dict, row: dict) -> str:
     """Seat text to display for a team table ``row``.
 
     ``team_meta`` is the live source of truth (the dialog writes there); the
-    row's own ``seat`` is only the fallback until a dialog has touched it, so
-    a freshly edited 座位号 shows immediately instead of waiting for a
-    refetch to rebuild ``team_rows``."""
+    row's own ``seat`` is only the fallback for a team missing from
+    ``team_meta`` — so a freshly edited 座位号 shows immediately instead of
+    waiting for a refetch to rebuild ``team_rows``. An EMPTY meta seat is a
+    real value (operator cleared it), not a signal to fall back: that would
+    resurrect a seat they just deleted."""
     entry = team_meta.get(row.get("id"))
-    if entry is not None and "seat" in entry:
+    if entry is not None:
         return str(entry.get("seat") or "")
     return str(row.get("seat") or "")
 
@@ -1349,14 +1365,23 @@ def launch_gui(settings: Settings, problems, teams, meta, saved,
         problem_rows = build_problem_rows(problems2, old_colors, current_print)
         old_meta = team_meta
         saved_teams = build_teams_setup(assignments, old_meta)
-        team_rows = build_team_rows(teams2, group_defs, saved_teams)
+        # seats shown last round let build_team_rows tell an echoed OMS
+        # label (not a real override) from a hand-typed one
+        previous_seats = {tid: (m or {}).get("seat") or ""
+                          for tid, m in old_meta.items()}
+        team_rows = build_team_rows(teams2, group_defs, saved_teams,
+                                    previous_seats=previous_seats)
         for r in team_rows:
             assignments.setdefault(r["id"], set(r["group_ids"]))
-        # seat/members/coaches edits survive the refetch for teams that
-        # still exist (same spirit as the preserved group assignments)
-        team_meta = {r["id"]: old_meta.get(
-            r["id"], {"seat": r["seat"], "members": list(r["members"]),
-                      "coaches": list(r["coaches"])})
+        # members/coaches edits survive the refetch for teams that still
+        # exist (same spirit as the preserved group assignments); the seat
+        # follows the fresh row so an OMS reassignment is not frozen
+        team_meta = {r["id"]: {
+            "seat": r["seat"], "members": list(r["members"]),
+            "coaches": list(old_meta[r["id"]]["coaches"])}
+            if r["id"] in old_meta else {
+                "seat": r["seat"], "members": list(r["members"]),
+                "coaches": list(r["coaches"])}
             for r in team_rows}
         # refetch rebuilds team_rows in 学号 order — reset the view sort
         sort_state["col"] = None
@@ -1448,10 +1473,13 @@ def launch_gui(settings: Settings, problems, teams, meta, saved,
             print_label = None
         saved_teams = build_teams_setup(assignments, team_meta)
         problem_rows = build_problem_rows(problems2, old_colors, print_label)
-        team_rows = build_team_rows(teams2, group_defs, saved_teams)
+        old_meta = team_meta
+        previous_seats = {tid: (m or {}).get("seat") or ""
+                          for tid, m in old_meta.items()}
+        team_rows = build_team_rows(teams2, group_defs, saved_teams,
+                                    previous_seats=previous_seats)
         for r in team_rows:
             assignments.setdefault(r["id"], set(r["group_ids"]))
-        old_meta = team_meta
         team_meta = {r["id"]: old_meta.get(
             r["id"], {"seat": r["seat"], "members": list(r["members"]),
                       "coaches": list(r["coaches"])})
