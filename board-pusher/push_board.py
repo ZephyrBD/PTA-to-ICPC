@@ -188,6 +188,45 @@ class Pusher:
                 t.pop("organization")
         return out
 
+    # ---- 榜单登记（contest_list.json）--------------------------------------
+
+    def index_entry(self, config: dict) -> dict:
+        """单个比赛在 contest_list.json 里的条目，形状仿照现有条目。"""
+        year = datetime.fromtimestamp(config["start_time"] / 1000,
+                                      tz=timezone.utc).year
+        return {
+            "board_link": f"/icpc/{year}/{self.args.contest_id}",
+            "config": {
+                "start_time": config["start_time"],
+                "frozen_time": config["frozen_time"],
+                "contest_name": config["contest_name"],
+                "end_time": config["end_time"],
+                "logo": {"preset": "ICPC"},
+            },
+        }, year
+
+    def update_index(self, config: dict) -> None:
+        """把本比赛条目合并进 contest_list.json（就地更新，保留其它比赛）。
+
+        该文件在 xcpcio 仓库 packages/apps/board/public/data/index/ 下，
+        改完仍需 git push 走一次静态构建才会生效。
+        """
+        entry, year = self.index_entry(config)
+        path = self.args.emit_index
+        try:
+            with open(path, encoding="utf-8") as f:
+                index = json.load(f)
+        except FileNotFoundError:
+            index = {}
+        # 结构固定 icpc/<年份>/<比赛id>，与现有 contest_list.json 一致
+        index.setdefault("icpc", {}).setdefault(str(year), {})[
+            self.args.contest_id] = entry
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(index, f, ensure_ascii=False, indent=4)
+            f.write("\n")
+        print(f"[index] {path} 已登记 icpc/{year}/{self.args.contest_id}"
+              f"（记得在 xcpcio 仓库 git push 触发静态构建）")
+
     # ---- 推送 -------------------------------------------------------------
 
     def push(self, filename: str, payload) -> None:
@@ -222,6 +261,9 @@ def main() -> int:
                     help="罚时（毫秒），默认 1200（=20 分钟）")
     ap.add_argument("--medal", default='{"official":{"gold":6,"silver":12,"bronze":17}}',
                     help="medal JSON，默认按上届正式队伍配置")
+    ap.add_argument("--emit-index", metavar="FILE",
+                    help="生成/合并 contest_list.json 到指定路径"
+                         "（xcpcio 仓库的 public/data/index/contest_list.json）")
     ap.add_argument("--interval", type=float, default=10.0,
                     help="推送间隔秒数，默认 10（站点要求 >=5）")
     ap.add_argument("--once", action="store_true", help="只推一轮就退出")
@@ -255,10 +297,15 @@ def main() -> int:
 
     pusher = Pusher(args)
     interval = max(args.interval, 5.0)
+    index_done = False
 
     while True:
         try:
             config, runs = pusher.collect()
+            # contest_list.json 只需要登记一次；循环里重复写无意义
+            if args.emit_index and not index_done:
+                pusher.update_index(config)
+                index_done = True
             if not args.teams_only:
                 pusher.push("run.json", runs)
             # team.json 每轮都推：队伍列表比赛期间偶有补录，代价很小
